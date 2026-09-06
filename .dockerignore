@@ -1,0 +1,34 @@
+# Keep the build context small. onnx_out/ is NOT excluded -- the served model
+# lives there and must reach the image.
+
+.git
+.gitignore
+.venv
+**/__pycache__
+**/*.pyc
+
+# Training and analysis inputs. None of this is needed to serve.
+data/
+models/
+scripts/
+tests/
+benchmarks/
+raw/
+
+# The rejected INT8 graph and the quantisation scratch files. Excluding these
+# by name rather than taking all of onnx_out/ keeps a 119 MB graph and a
+# 472 MB intermediate out of the context while still shipping the fp32 model.
+# Named individually rather than as onnx_out/*.json, which would also exclude
+# tokenizer.json and tokenizer_config.json and break the build.
+onnx_out/model.int8*.onnx
+onnx_out/model.normalized.onnx
+onnx_out/model.preprocessed.onnx
+onnx_out/export_info.json
+onnx_out/quantize_info.json
+onnx_out/*.eval.json
+sym_shape_infer_temp.onnx
+
+Dockerfile*
+.dockerignore
+README.md
+CLAUDE.md

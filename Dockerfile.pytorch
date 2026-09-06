@@ -1,0 +1,64 @@
+# PyTorch baseline image -- NOT a serving image.
+#
+# This exists for one reason: so the "ONNX is faster than PyTorch" claim can
+# be re-measured on demand instead of trusted. It installs the training-side
+# stack and runs the benchmark harness against the PyTorch checkpoint. The
+# service itself never uses torch; see Dockerfile for what actually ships.
+#
+# Build:
+#   docker build -f Dockerfile.pytorch -t bartascope-pytorch .
+# Run the baseline sweep, writing into the repo's CSV:
+#   docker run --rm --cpus 2 \
+#     -v "$(pwd)/benchmarks:/app/benchmarks" bartascope-pytorch
+#
+# Requires models/minilm/ and data/merged.csv in the build context, both of
+# which are gitignored build artifacts. It also needs .dockerignore relaxed,
+# since that file excludes data/, models/ and scripts/ from the serving
+# build. Use --file with a context that includes them, or comment those lines
+# out for the duration of the build.
+#
+# Expect roughly 2 GB. That number is the entire justification for the ONNX
+# runtime image being ~520 MB, so do not try to slim this one down: its size
+# is the comparison.
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
+WORKDIR /app
+
+# CPU-only torch from PyTorch's own index. The default PyPI wheel pulls the
+# full CUDA runtime, which would add several more GB for hardware that is not
+# present on a Cloud Run instance.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+# Pinned to the versions every number in benchmarks/latency.csv was measured
+# with. onnxruntime is here too so a single container can run both sides of
+# the comparison in one process if that is ever wanted -- though note the
+# harness deliberately measures one backend per process, because two ORT
+# sessions plus torch oversubscribe the CPU and corrupt the tails.
+RUN pip install --no-cache-dir \
+    transformers==5.16.1 \
+    tokenizers==0.23.2 \
+    onnxruntime==1.29.0 \
+    numpy==2.5.3 \
+    pandas==3.0.5 \
+    scikit-learn==1.9.0
+
+COPY scripts/ /app/scripts/
+COPY app/ /app/app/
+COPY data/merged.csv /app/data/merged.csv
+COPY models/minilm/ /app/models/minilm/
+
+# One backend per process, matching how the local numbers were produced.
+ENTRYPOINT ["python", "scripts/benchmark.py", \
+            "--backends", "pytorch-fp32", \
+            "--model-dir", "models/minilm", \
+            "--data", "data/merged.csv", \
+            "--out", "benchmarks/latency.csv", \
+            "--notes", "pytorch baseline, container"]

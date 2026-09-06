@@ -6,20 +6,27 @@ so the lifespan handler executes and the model actually loads. No mocks: the
 thing most likely to break here is model loading and preprocessing, and a
 mock would hide exactly that.
 
+With no arguments it imports the app in-process. Given --base-url it runs the
+identical checks over HTTP against an already-running server, so the same
+suite covers the container.
+
 Usage:
     python tests/smoke_api.py
+    python tests/smoke_api.py --base-url http://127.0.0.1:8080
 """
 
+import argparse
+import contextlib
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from fastapi.testclient import TestClient  # noqa: E402
-
-from app.main import app  # noqa: E402
-from app.textproc import LABELS  # noqa: E402
+# LABELS is a four-item constant, duplicated here so the HTTP mode does not
+# need the application importable -- it may be running in a container built
+# from a different commit.
+LABELS = ["normal", "transactional", "promotional", "phishing"]
 
 # Deliberately mixed: English transactional, a phishing attempt with a URL,
 # Bangla, and a banglish personal message.
@@ -42,8 +49,33 @@ def check(condition: bool, message: str) -> None:
         failures.append(message)
 
 
+@contextlib.contextmanager
+def make_client(base_url: str):
+    """In-process TestClient, or an httpx client against a live server.
+
+    Both expose the same .get/.post surface, so the checks below do not care
+    which one they are given.
+    """
+    if base_url:
+        import httpx
+        print(f"mode: HTTP against {base_url}")
+        with httpx.Client(base_url=base_url, timeout=30.0) as client:
+            yield client
+    else:
+        from fastapi.testclient import TestClient
+        from app.main import app
+        print("mode: in-process TestClient")
+        with TestClient(app) as client:
+            yield client
+
+
 def main() -> None:
-    with TestClient(app) as client:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--base-url", default="",
+                    help="run against a live server instead of in-process")
+    args = ap.parse_args()
+
+    with make_client(args.base_url) as client:
         print("\n-- health and readiness --")
         r = client.get("/healthz")
         check(r.status_code == 200, f"/healthz -> {r.status_code}")

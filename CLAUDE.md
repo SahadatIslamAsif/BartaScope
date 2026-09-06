@@ -236,6 +236,67 @@ sessions plus torch on a 12-core box inflated PyTorch's p95 from 15.57 to
 idle. That run produced a flattering, entirely fake "7.28× vs PyTorch". The
 CSV keeps it, tagged `combined single-process run` — ignore those rows.
 
+## Container: measured, not estimated
+
+Image `bartascope`, built from `Dockerfile`. Docker reports three different
+sizes and they mean different things — quote the right one:
+
+| measurement | value | meaning |
+|---|---|---|
+| `docker images` | 1.41 GB | uncompressed layers + attestation manifests. **Misleading, do not quote.** |
+| `docker image inspect .Size` | **523 MB** | compressed layers — what a node pulls |
+| `du -sm /` in the container | 838 MB | disk footprint while running |
+
+Against the ~600 MB expectation: **523 MB pulled, under target; 838 MB on
+disk, over it.** The pull size is what governs cold start on Cloud Run.
+
+Composition: model payload 489 MB (`model.onnx.data` 470.6 + `tokenizer.json`
+16.8 + graph 1.5), site-packages 247 MB, Debian slim + Python ~100 MB. The
+model is 58% of the image, so dependency trimming has limited headroom —
+dropping `transformers` in favour of raw `tokenizers` would save roughly
+85 MB and is the only remaining lever worth considering.
+
+torch is confirmed absent: the container logs
+`[transformers] PyTorch was not found` on startup.
+
+**The `chown -R` trap, since it will recur.** An early build was 928 MB
+because `RUN useradd ... && chown -R bartascope:bartascope /app` came after
+the COPY. `chown -R` rewrites every file into a new layer, so the 489 MB
+model was stored twice. Create the user first and use
+`COPY --chown=`. This cost exactly 489 MB — 405 MB of the final image's
+savings came from that one line.
+
+Cold start, `docker run` to `/readyz` 200, `--cpus 2`, three runs:
+**median 4.30 s** (4.04 / 4.30 / 4.48), of which model load is ~1.8 s. The
+rest is container start, Python import and uvicorn boot.
+
+`BARTASCOPE_THREADS` is set by `docker-entrypoint.sh` from the cgroup CPU
+quota, verified: `--cpus 2` produces `BARTASCOPE_THREADS=2`. Never let it
+fall back to `os.cpu_count()`, which reports the host's cores and ignores the
+quota entirely.
+
+## API latency is not model latency
+
+`benchmarks/latency.csv` now carries a `api-http-e2e` backend row. It is a
+different measurement from the `onnx-fp32` rows and must not be compared
+with them casually:
+
+| | p50 | p95 | p99 |
+|---|---|---|---|
+| `onnx-fp32`, model only, 6 threads | 5.09 | 9.14 | 10.36 |
+| `api-http-e2e`, container, 2 threads | 9.09 | **16.14** | 18.66 |
+| ...of which server-side `inference_ms` | 7.12 | 13.67 | 15.77 |
+
+The `onnx-fp32` rows time `session.run` alone on pre-tokenised tensors. The
+API row times the full round trip: HTTP, ASGI, pydantic validation,
+`normalise()`, tokenisation, ORT, softmax, JSON serialisation. HTTP and
+framework overhead is only **~2 ms at p50**; the rest of the gap is
+preprocessing plus running on 2 threads instead of 6.
+
+**9.14 ms is not a number this service ever delivers to a caller.** Quote
+16.14 ms p95 for the API and keep the model-only figure for the ONNX-vs-
+PyTorch comparison it was measured for.
+
 ## Gotchas already discovered
 
 - **MiniLM needs XLM-R's tokenizer.** Its config declares no
@@ -282,7 +343,9 @@ CSV keeps it, tagged `combined single-process run` — ignore those rows.
 4. ~~**FastAPI service**~~ — DONE. `app/main.py`, all five endpoints,
    session loaded in `lifespan`, verified by `tests/smoke_api.py` (26
    checks, real model, no mocks).
-5. **Docker** — image `bartascope`, multi-stage, **torch excluded from the
+5. ~~**Docker**~~ — DONE for the serving image. See below.
+   `Dockerfile.pytorch` is written but **has never been built**.
+6. **Docker (original text, for reference)** — image `bartascope`, multi-stage, **torch excluded from the
    runtime image**
    (onnxruntime + tokenizers + fastapi ≈ 350 MB vs 2 GB+). Keep a second
    Dockerfile with the PyTorch build so the before/after benchmark is

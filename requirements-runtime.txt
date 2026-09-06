@@ -1,0 +1,21 @@
+# Runtime dependencies for the Bartascope serving image.
+#
+# torch is deliberately absent. The model is served through ONNX Runtime, and
+# the PyTorch checkpoint is only needed to *produce* the ONNX graph, never to
+# run it. Including torch would add roughly 2 GB to the image for code that
+# would never execute.
+#
+# Also absent: onnx, onnxscript, pandas, scikit-learn, joblib, matplotlib.
+# Those belong to the export, evaluation and benchmarking scripts, which run
+# on a workstation, not in the container.
+#
+# Pinned to what was measured locally. An unpinned onnxruntime is an
+# unannounced change to every latency number in benchmarks/latency.csv.
+
+onnxruntime==1.29.0
+transformers==5.16.1
+tokenizers==0.23.2
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+numpy==2.5.3
+pydantic==2.13.5
