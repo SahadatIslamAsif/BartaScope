@@ -1,0 +1,26 @@
+# Line endings.
+#
+# core.autocrlf is on, so without this file Git checks shell scripts out as
+# CRLF on Windows. `COPY docker-entrypoint.sh` then bakes "#!/bin/sh\r" into
+# the image and the container dies at startup with the famously unhelpful
+#
+#     exec /usr/local/bin/docker-entrypoint.sh: no such file or directory
+#
+# which names the file it just failed to run. The interpreter is what is
+# missing, not the script. Anything that ends up inside a Linux container, or
+# that Docker parses, is pinned to LF here.
+
+* text=auto
+
+*.sh text eol=lf
+Dockerfile text eol=lf
+Dockerfile.* text eol=lf
+.dockerignore text eol=lf
+.gitattributes text eol=lf
+
+# Data and metrics files are read by pandas and csv on both platforms; pin
+# them too so a diff never shows every row as changed.
+*.csv text eol=lf
+*.json text eol=lf
+*.py text eol=lf
+*.md text eol=lf
