@@ -76,7 +76,10 @@ def main() -> None:
         opset_version=args.opset,
         do_constant_folding=True,
     )
-    size_mb = onnx_path.stat().st_size / 1e6
+    # The dynamo exporter writes weights to model.onnx.data alongside the
+    # graph. The graph file alone is ~1.5 MB; reporting that as the model
+    # size would be a lie. Count every artifact the session needs.
+    size_mb = sum(p.stat().st_size for p in outdir.glob("model.onnx*")) / 1e6
     print(f"  wrote {onnx_path} ({size_mb:.1f} MB)")
 
     graph = onnx.load(str(onnx_path))

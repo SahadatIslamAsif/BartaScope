@@ -12,6 +12,7 @@ import argparse
 import time
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -118,8 +119,16 @@ def main() -> None:
         outdir / "errors.csv", index=False)
 
     pd.DataFrame(cm, index=LABELS, columns=LABELS).to_csv(outdir / "confusion_matrix.csv")
+
+    # Persist the fitted pipeline so benchmark.py can time it under the same
+    # protocol as the transformers. The latency printed above uses this
+    # script's own 200-iteration loop; the CSV row that the model-selection
+    # table quotes comes from the shared harness instead.
+    joblib.dump(model, outdir / "model.joblib")
+
     print(f"\n  {len(err)} misclassified rows -> {outdir}/errors.csv")
-    print(f"  confusion matrix         -> {outdir}/confusion_matrix.csv\n")
+    print(f"  confusion matrix         -> {outdir}/confusion_matrix.csv")
+    print(f"  fitted pipeline          -> {outdir}/model.joblib\n")
 
 
 if __name__ == "__main__":

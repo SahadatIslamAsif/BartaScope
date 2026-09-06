@@ -94,16 +94,32 @@ to 128 or 512 — most of the available speedup is in not doing that.
 
 ## Model selection (measured, single-message CPU p95)
 
-| Model | Params | test macro-F1 | p95 | Size |
-|---|---|---|---|---|
-| TF-IDF char n-gram + LogReg | — | **0.9787** | **0.79 ms** | ~5 MB |
-| **MiniLM L12-H384** (deployed) | 118M | 0.9695 | 35.82 ms | 471 MB |
-| XLM-R base | 278M | 0.9645 | 93.29 ms | 1.1 GB |
+| Model | Params | test macro-F1 | p95 | Hardware | Size |
+|---|---|---|---|---|---|
+| TF-IDF char n-gram + LogReg | — | **0.9787** | **0.55 ms** | local | ~5 MB |
+| **MiniLM L12-H384** (deployed) | 118M | 0.9695 | 12.91 ms | local | 471 MB |
+| XLM-R base | 278M | 0.9645 | 93.29 ms | **Kaggle — NOT comparable** | 1.1 GB |
 
-The classical baseline wins on accuracy at 45× lower latency. That is a
+The classical baseline wins on accuracy at 23× lower latency. That is a
 headline finding, not an embarrassment — keep it in the README. MiniLM is
 deployed because the project is about serving a transformer, and MiniLM
 beat XLM-R on both axes.
+
+**Read the hardware column before quoting any of these.** The first two
+rows are from `benchmarks/latency.csv` on the local AMD box, batch 1,
+dynamic padding, 20 warm-up / 500 measured. The XLM-R row is the original
+Kaggle measurement and has never been re-measured locally, because only
+`models/minilm/` was kept — reproducing it needs a GPU retrain. Every
+Kaggle number measured on this project ran roughly 2.8× slower than local
+(MiniLM was 35.82 ms there, 12.91 ms here), so XLM-R's real local p95 is
+probably nearer 33 ms. **That is an inference, not a measurement — do not
+put it in the README as a number.** The XLM-R-vs-MiniLM ordering is still
+safe: both were measured on the same Kaggle box.
+
+The earlier "45× lower latency" claim came from comparing a Kaggle MiniLM
+number against a Kaggle TF-IDF number. Both are now local and the true
+ratio is 23×. The gap narrowed because faster hardware helps a 118M-param
+transformer far more than it helps a sparse dot product.
 
 **Run-to-run noise is about ±0.3 macro-F1** (GPU non-determinism, measured
 across two identical runs). Treat sub-0.5-point differences as noise.
