@@ -24,10 +24,15 @@ Naming, for consistency across the repo:
 
 ## Status
 
-Done: dataset merged, three models trained and compared, deployment
-model chosen.
-Next: ONNX export → quantisation → benchmark → FastAPI → Docker →
-deploy → load test → frontend.
+Done: dataset merged, three models trained and compared, deployment model
+chosen, ONNX export + parity, INT8 quantisation (**evaluated and
+rejected**), benchmark harness, FastAPI service.
+Next: Docker → deploy → load test → frontend.
+
+**Goal 2 is not met by the deployed configuration, and that is a result,
+not a todo.** ONNX fp32 cuts p95 by 1.34×, not the 2× the goal asks for.
+INT8 reached 2.21× but was rejected on safety grounds (see below). Report
+the 1.34× honestly; do not quietly restate the goal to match it.
 
 ## Layout
 
@@ -35,13 +40,31 @@ deploy → load test → frontend.
 bartascope/
 data/merged.csv           12,808 rows. Single artifact, has a `split` column.
 models/minilm/            fine-tuned checkpoint (deployed model)
-models/results.json       metrics
+models/results.json       metrics (latency fields are LOCAL, see below)
 models/errors.csv         49 misclassified test rows
+models/baseline/          fitted TF-IDF pipeline + its errors
+onnx_out/model.onnx       DEPLOYED graph, fp32, 472 MB (+ .onnx.data)
+onnx_out/model.int8.onnx  rejected INT8 graph, kept for the record
+benchmarks/latency.csv    every latency row ever measured, append-only
+benchmarks/eval_*.json    fp32 / int8 / int8-matmul metrics, the decision record
+benchmarks/export_info.json  parity result and export settings
+app/textproc.py           normalise + detect_lang, shared with the dataset builder
+app/model.py              ORT session wrapper, loaded once
+app/main.py               FastAPI service
+app/metrics.py            hand-rolled Prometheus exposition (no dependency)
+tests/smoke_api.py        end-to-end, real model, no mocks
 scripts/prepare_dataset.py  rebuilds merged.csv from raw sources
 scripts/baseline_tfidf.py   classical baseline (runs in <1 min, CPU)
 scripts/train_transformer.py  fine-tuning (needs a GPU — use Kaggle)
-scripts/export_onnx.py      ONNX export + parity check (written, NOT yet run)
+scripts/export_onnx.py      ONNX export + parity check (PASSED, 6.20e-06)
+scripts/quantize_onnx.py    INT8 quantisation (ran; result rejected)
+scripts/evaluate_onnx.py    full four-class eval of any ONNX graph
+scripts/benchmark.py        the latency harness
 ```
+
+`onnx_out/` and `models/` are gitignored — they are build artifacts.
+Regenerate with `export_onnx.py`; the CSV and the eval JSONs are the
+committed record.
 
 ## Dataset
 
@@ -152,6 +175,67 @@ what justifies choosing any transformer at all — keep the script:
 python scripts/baseline_tfidf.py --data data/merged.csv
 ```
 
+## Deployment decision: serve fp32, reject INT8
+
+**Decided. Do not revisit without new evidence.** `onnx_out/model.onnx`
+(fp32) is what the service loads. The INT8 graph is kept as the rejected
+alternative, with its metrics, so the decision stays auditable.
+
+| | ONNX fp32 (deployed) | INT8 (rejected) |
+|---|---|---|
+| artifact size | 472.1 MB | 119.1 MB (3.96× smaller) |
+| p95, batch 1, dynamic | 9.14 ms | 5.55 ms |
+| speedup vs PyTorch p95 | 1.34× | 2.21× |
+| test macro-F1 | 0.9695 | 0.9547 (−1.48) |
+| phishing recall | 0.962 | 0.940 |
+| **phishing missed as `normal`** | **4** | **13** |
+| transactional recall | 1.000 | 0.923 |
+
+The disqualifying number is the last-but-one row. INT8 more than triples
+phishing false negatives into `normal` — the single worst direction for a
+safety classifier to fail in. It is invisible in the headline: phishing's
+*F1* barely moves (0.963 → 0.959) because precision rises as recall falls.
+Anyone reading only macro-F1 would have shipped this.
+
+A 1.48-point macro-F1 drop is also well outside the ±0.3 run-to-run noise
+band, and quantisation is deterministic, so it is not noise at all.
+
+MatMul-only quantisation (sparing the embedding `Gather`) was tested and is
+**strictly dominated**: 407.8 MB *and* macro-F1 0.9507. The accuracy loss
+comes from the MatMuls, not from the embedding table, so there is no
+variant that buys size without buying error. Do not re-try this.
+
+## Benchmark results (local, isolated processes)
+
+`benchmarks/latency.csv`, rows tagged `isolated process`. 20 warm-up / 500
+measured, seeded message order, tokenisation outside the timing loop.
+
+Single message (batch 1, dynamic padding), p95:
+
+| backend | p50 | p95 | msg/s |
+|---|---|---|---|
+| tfidf-logreg | 0.37 | **0.48** | 2666 |
+| onnx-int8 *(rejected)* | 3.07 | 5.55 | 307 |
+| **onnx-fp32 (deployed)** | 5.09 | **9.14** | 182 |
+| pytorch-fp32 (baseline) | 8.71 | 12.28 | 111 |
+
+Two findings that should shape the service, not just the README:
+
+- **ONNX only wins at batch 1.** At batch 8 and 32 it is *slower* than
+  PyTorch (batch 8 dynamic: 60.37 vs 50.35 ms p50). Do not assume the ONNX
+  win scales with batch size; it inverts.
+- **Batching hurts, so do not add it for throughput.** Batch 1 dynamic is
+  the highest-throughput configuration measured. One long message drags the
+  whole batch to its length (mean seq len 27.4 at batch 1 vs 60.6 at batch
+  32), and the threads already saturate on a single short sequence. If
+  `/v1/classify/batch` ever needs to be fast, length-bucket first.
+
+**Measure each backend in its own process.** A combined run holding two ORT
+sessions plus torch on a 12-core box inflated PyTorch's p95 from 15.57 to
+92.67 ms, because ORT thread pools spin-wait rather than sleeping when
+idle. That run produced a flattering, entirely fake "7.28× vs PyTorch". The
+CSV keeps it, tagged `combined single-process run` — ignore those rows.
+
 ## Gotchas already discovered
 
 - **MiniLM needs XLM-R's tokenizer.** Its config declares no
@@ -165,21 +249,39 @@ python scripts/baseline_tfidf.py --data data/merged.csv
   most common silent export bug and costs the entire padding win.
 - **Do not strip URLs, digits or punctuation** in preprocessing. They are
   the strongest phishing signals. Standard tutorial cleaning destroys them.
+- **The serving path must call `normalise()`.** `merged.csv` holds already
+  normalised text (verified idempotent on all 12,808 rows), so the model was
+  fine-tuned on text with `<PHONE>`, `<CODE>` and domain-only URLs. Serving
+  raw text is a silent failure — confident probabilities from a distribution
+  the model never saw. This is why `normalise` and `detect_lang` live in
+  `app/textproc.py` and are imported by both `prepare_dataset.py` and the
+  service, rather than existing twice.
+- **ONNX's dynamo exporter breaks ORT quantisation tooling.**
+  `quant_pre_process` fails with `unsupported broadcast between Min(512,
+  batch) sequence`, and `quantize_dynamic` then fails with `Inferred shape
+  and existing shape differ in dimension 0: (384) vs (4)`. The exporter
+  emits `value_info` that onnx's own inferencer contradicts. Fix is
+  `quantize_onnx.py --strip-value-info`, which drops the 814 intermediate
+  annotations and re-infers.
+- **`detect_lang` agrees with the dataset's `lang` column only 89.9% of the
+  time**, because that column came from the source datasets, not from this
+  heuristic. The API reports the heuristic's answer. It is context for the
+  caller, never an input to the model — do not start treating it as ground
+  truth.
+- **Windows needs `PYTHONIOENCODING=utf-8`** to run `export_onnx.py`, or
+  torch's own success message crashes cp1252 stdout mid-export.
 
 ## Remaining work
 
-1. **ONNX export + parity** — `scripts/export_onnx.py` exists and was
-   tested against a small BERT (parity 1.4e-08). Not yet run on the real
-   checkpoint. Must PASS at <1e-4 max logit diff before anything else.
-2. **Dynamic INT8 quantisation** — re-run full eval after. Record macro-F1
-   before/after; anything under 0.5 points is noise.
-3. **Benchmark harness** — fixed hardware, 20 warm-up iterations, 500
-   measured, report p50/p95/p99. Sweep batch 1/8/32 and padding strategy
-   (fixed-64 vs dynamic-to-batch-max). Save every stage to CSV.
-4. **FastAPI service** — `POST /v1/classify`, `/v1/classify/batch`,
-   `GET /healthz`, `/readyz`, `/metrics`. ORT session loaded once in a
-   `lifespan` handler. Response: label, all four probabilities, detected
-   language, `model_version` (`bartascope-minilm-v1.0.0`), `inference_ms`.
+1. ~~**ONNX export + parity**~~ — DONE. 6.20e-06 max logit diff over 200
+   test messages, zero label disagreements, both axes dynamic.
+2. ~~**Dynamic INT8 quantisation**~~ — DONE and **rejected**. See the
+   deployment decision above. Do not re-open without new evidence.
+3. ~~**Benchmark harness**~~ — DONE. `scripts/benchmark.py`, results in
+   `benchmarks/latency.csv`. Run one backend per process.
+4. ~~**FastAPI service**~~ — DONE. `app/main.py`, all five endpoints,
+   session loaded in `lifespan`, verified by `tests/smoke_api.py` (26
+   checks, real model, no mocks).
 5. **Docker** — image `bartascope`, multi-stage, **torch excluded from the
    runtime image**
    (onnxruntime + tokenizers + fastapi ≈ 350 MB vs 2 GB+). Keep a second

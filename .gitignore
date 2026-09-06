@@ -3,3 +3,5 @@ __pycache__/
 *.zip
 onnx_out/
 .venv/
+sym_shape_infer_temp.onnx
+*.data

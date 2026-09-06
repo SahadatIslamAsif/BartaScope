@@ -1,0 +1,58 @@
+{
+  "model": "onnx_out\\model.onnx",
+  "test_macro_f1": 0.9695,
+  "test_n": 1923,
+  "per_class_f1": {
+    "normal": 0.9899,
+    "transactional": 0.9873,
+    "promotional": 0.9379,
+    "phishing": 0.9627
+  },
+  "per_language_macro_f1": {
+    "bangla": {
+      "macro_f1": 0.9767,
+      "n": 258,
+      "classes": 3,
+      "stray_preds": 0
+    },
+    "banglish": {
+      "macro_f1": 0.9845,
+      "n": 267,
+      "classes": 3,
+      "stray_preds": 0
+    },
+    "codemix": {
+      "macro_f1": 0.9778,
+      "n": 242,
+      "classes": 3,
+      "stray_preds": 0
+    },
+    "english": {
+      "macro_f1": 0.9491,
+      "n": 1156,
+      "classes": 4,
+      "stray_preds": 0
+    }
+  },
+  "per_source_macro_f1": {
+    "bengali_smishing": {
+      "macro_f1": 0.9784,
+      "n": 1013,
+      "classes": 3,
+      "stray_preds": 0
+    },
+    "collected_phone": {
+      "macro_f1": 1.0,
+      "n": 39,
+      "classes": 1,
+      "stray_preds": 0
+    },
+    "mendeley": {
+      "macro_f1": 0.8902,
+      "n": 871,
+      "classes": 3,
+      "stray_preds": 1
+    }
+  },
+  "max_length": 64
+}

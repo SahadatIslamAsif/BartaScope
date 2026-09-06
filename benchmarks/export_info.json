@@ -1,0 +1,20 @@
+{
+  "source_model": "models/minilm",
+  "input_names": [
+    "input_ids",
+    "attention_mask"
+  ],
+  "labels": [
+    "normal",
+    "transactional",
+    "promotional",
+    "phishing"
+  ],
+  "max_length": 64,
+  "opset": 18,
+  "size_mb": 472.1,
+  "parity_max_diff": 6.198883056640625e-06,
+  "parity_passed": true,
+  "onnx_fp32_p50_ms": 4.77,
+  "onnx_fp32_p95_ms": 9.15
+}
