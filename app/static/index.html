@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bartascope — SMS message type classifier</title>
+<!-- Inline SVG favicon: keeps the page to a single file and stops the
+     browser issuing a 404 for /favicon.ico on every load. -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>&#128242;</text></svg>">
+<style>
+/* Mobile-first. The only layout change on wider screens is a max-width, so
+   there is one column at every size and nothing to reflow. */
+:root {
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --ink: #1a1d21;
+  --muted: #626a72;
+  --line: #dde1e6;
+  --accent: #2f5fd0;
+  --danger: #c0392b;
+  --danger-bg: #fdecea;
+  --warn: #a86612;
+  --warn-bg: #fdf3e2;
+  --neutral: #4a5058;
+  --neutral-bg: #eef0f3;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171a;
+    --card: #1d2126;
+    --ink: #e9edf1;
+    --muted: #98a2ac;
+    --line: #2f353c;
+    --accent: #6f9bff;
+    --danger: #ff8a7a;
+    --danger-bg: #3a1f1c;
+    --warn: #f0b95f;
+    --warn-bg: #372a15;
+    --neutral: #b9c2cb;
+    --neutral-bg: #262c33;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 1.25rem 1rem 2.5rem;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto,
+        "Noto Sans Bengali", sans-serif;
+}
+main { max-width: 34rem; margin: 0 auto; }
+h1 { font-size: 1.6rem; margin: 0 0 .3rem; letter-spacing: -.01em; }
+.subtext { margin: 0 0 1.25rem; color: var(--muted); font-size: .95rem; }
+label { display: block; font-weight: 600; font-size: .9rem; margin-bottom: .4rem; }
+textarea {
+  width: 100%;
+  min-height: 8.5rem;
+  padding: .75rem;
+  border: 1px solid var(--line);
+  border-radius: .5rem;
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+  resize: vertical;
+}
+textarea:focus-visible, button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.meta-row {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: .75rem; margin: .4rem 0 1rem;
+  font-size: .8rem; color: var(--muted);
+}
+.counter.over { color: var(--danger); font-weight: 600; }
+button {
+  width: 100%;
+  padding: .8rem 1rem;
+  border: 0;
+  border-radius: .5rem;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:disabled { opacity: .7; cursor: progress; }
+.btn-inner { display: inline-flex; align-items: center; gap: .5rem; justify-content: center; }
+/* Motion, not just a changed label. The first request after a scale-from-zero
+   cold start takes about 4.3 seconds, and a static "Checking..." for that long
+   reads as a hung page. A moving spinner is the difference between "working"
+   and "broken". */
+.spinner {
+  width: 1em; height: 1em;
+  border: 2px solid rgba(255, 255, 255, .4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  /* Still needs to signal liveness without rotation. */
+  .spinner { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+}
+.hint {
+  margin-top: .75rem;
+  padding: .7rem .9rem;
+  background: var(--neutral-bg);
+  color: var(--muted);
+  border-radius: .5rem;
+  font-size: .85rem;
+}
+.card {
+  margin-top: 1.5rem;
+  padding: 1.1rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: .6rem;
+}
+.verdict { display: flex; align-items: baseline; gap: .7rem; flex-wrap: wrap; }
+.badge {
+  display: inline-block;
+  padding: .3rem .7rem;
+  border-radius: 2rem;
+  font-weight: 700;
+  font-size: .95rem;
+  letter-spacing: .01em;
+  background: var(--neutral-bg);
+  color: var(--neutral);
+}
+.badge.phishing { background: var(--danger-bg); color: var(--danger); }
+.badge.promotional { background: var(--warn-bg); color: var(--warn); }
+.confidence { font-size: 1.05rem; font-weight: 600; }
+.bars { margin: 1.1rem 0 0; padding: 0; list-style: none; }
+.bars li { margin-bottom: .6rem; }
+.bar-label {
+  display: flex; justify-content: space-between;
+  font-size: .82rem; margin-bottom: .2rem; color: var(--muted);
+}
+.bar-label .name { color: var(--ink); }
+.track {
+  height: .5rem; border-radius: .25rem;
+  background: var(--neutral-bg); overflow: hidden;
+}
+.fill { height: 100%; background: var(--neutral); border-radius: .25rem; }
+.fill.phishing { background: var(--danger); }
+.fill.promotional { background: var(--warn); }
+.fill.accent { background: var(--accent); }
+.card-footer {
+  display: flex; justify-content: space-between; gap: .75rem; flex-wrap: wrap;
+  margin-top: 1rem; padding-top: .75rem;
+  border-top: 1px solid var(--line);
+  font-size: .82rem; color: var(--muted);
+}
+.error {
+  margin-top: 1.25rem; padding: .8rem 1rem;
+  background: var(--danger-bg); color: var(--danger);
+  border-radius: .5rem; font-size: .9rem;
+}
+.safety {
+  margin-top: 1.75rem; padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  font-size: .82rem; color: var(--muted);
+}
+.safety strong { color: var(--ink); }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Bartascope</h1>
+  <p class="subtext">
+    Paste an SMS and Bartascope tells you what kind of message it is —
+    personal, a service notification, advertising, or a phishing attempt.
+  </p>
+
+  <label for="message">Message</label>
+  <textarea id="message" maxlength="4000"
+    placeholder="আপনার bKash অ্যাকাউন্ট বন্ধ হয়ে যাবে, এখনই যাচাই করুন…&#10;Your OTP is 123456. Do not share it with anyone."></textarea>
+
+  <div class="meta-row">
+    <span id="counter" class="counter">0 / 2000</span>
+    <span>One message at a time</span>
+  </div>
+
+  <button id="check" type="button"><span class="btn-inner">Check message</span></button>
+
+  <div id="hint" class="hint" role="status" hidden></div>
+  <div id="error" class="error" role="alert" hidden></div>
+
+  <section id="result" class="card" aria-live="polite" hidden>
+    <div class="verdict">
+      <span id="badge" class="badge"></span>
+      <span id="confidence" class="confidence"></span>
+    </div>
+    <ul id="bars" class="bars"></ul>
+    <div class="card-footer">
+      <span id="language"></span>
+      <span id="timing"></span>
+    </div>
+  </section>
+
+  <p class="safety">
+    <strong>Advisory only.</strong> This is a model's best guess, not a
+    guarantee — it can be wrong in both directions. Whatever it says,
+    <strong>never share an OTP, PIN or password with anyone</strong>, and
+    never enter one on a page you reached from a link in a message.
+  </p>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  // Must match MAX_CHARS in app/schemas.py. Over this the API returns 422,
+  // so the counter warns before the request is worth sending.
+  var MAX_CHARS = 2000;
+  // Fixed order rather than sorted by probability, so the bars stay in the
+  // same place between messages and can be compared at a glance.
+  var LABELS = ["normal", "transactional", "promotional", "phishing"];
+  var ACCENT = { phishing: "phishing", promotional: "promotional" };
+
+  // How long to wait before explaining the delay. Short enough to land well
+  // inside a ~4.3 s cold start, long enough that a normal ~20 ms response
+  // never shows it and makes the page flicker.
+  var SLOW_MS = 1200;
+
+  var el = {
+    message: document.getElementById("message"),
+    counter: document.getElementById("counter"),
+    check: document.getElementById("check"),
+    hint: document.getElementById("hint"),
+    error: document.getElementById("error"),
+    result: document.getElementById("result"),
+    badge: document.getElementById("badge"),
+    confidence: document.getElementById("confidence"),
+    bars: document.getElementById("bars"),
+    language: document.getElementById("language"),
+    timing: document.getElementById("timing")
+  };
+
+  function updateCounter() {
+    var n = el.message.value.length;
+    el.counter.textContent = n + " / " + MAX_CHARS;
+    el.counter.classList.toggle("over", n > MAX_CHARS);
+  }
+  el.message.addEventListener("input", updateCounter);
+  updateCounter();
+
+  var slowTimer = null;
+
+  function setLoading(on) {
+    el.check.disabled = on;
+    el.check.textContent = "";
+
+    var inner = document.createElement("span");
+    inner.className = "btn-inner";
+    if (on) {
+      var spinner = document.createElement("span");
+      spinner.className = "spinner";
+      inner.appendChild(spinner);
+      inner.appendChild(document.createTextNode("Checking…"));
+    } else {
+      inner.appendChild(document.createTextNode("Check message"));
+    }
+    el.check.appendChild(inner);
+
+    window.clearTimeout(slowTimer);
+    if (on) {
+      // Only explain the wait once it is actually a wait. The service scales
+      // to zero, so the first request can pay a full container cold start
+      // while every later one answers in milliseconds.
+      slowTimer = window.setTimeout(function () {
+        el.hint.textContent = "Still working — the classifier may be " +
+          "starting up. The first request after a quiet period takes a few " +
+          "seconds; after that it is near-instant.";
+        el.hint.hidden = false;
+      }, SLOW_MS);
+    } else {
+      el.hint.hidden = true;
+      el.hint.textContent = "";
+    }
+  }
+
+  function showError(text) {
+    el.error.textContent = text;
+    el.error.hidden = false;
+    window.clearTimeout(slowTimer);
+    el.hint.hidden = true;
+    // Hide any previous verdict. Leaving it on screen next to an error puts
+    // a stale label directly under the message that failed, and the obvious
+    // reading is that the label describes that message. On a phishing
+    // classifier the dangerous version of that mistake is a stale "normal".
+    el.result.hidden = true;
+  }
+
+  function clearError() {
+    el.error.hidden = true;
+    el.error.textContent = "";
+  }
+
+  function renderBars(probabilities) {
+    // Rebuild rather than mutate: four rows is cheap, and it keeps the DOM
+    // and the response in step with no diffing logic.
+    el.bars.textContent = "";
+    LABELS.forEach(function (label) {
+      var p = probabilities[label] || 0;
+      var pct = (p * 100).toFixed(1);
+
+      var name = document.createElement("span");
+      name.className = "name";
+      name.textContent = label;
+
+      var value = document.createElement("span");
+      value.textContent = pct + "%";
+
+      var head = document.createElement("div");
+      head.className = "bar-label";
+      head.appendChild(name);
+      head.appendChild(value);
+
+      var fill = document.createElement("div");
+      fill.className = "fill " + (ACCENT[label] || "accent");
+      // Hairline for a near-zero probability, so every class stays visible
+      // as a row rather than vanishing into the track.
+      fill.style.width = Math.max(p * 100, 0.75) + "%";
+
+      var track = document.createElement("div");
+      track.className = "track";
+      track.appendChild(fill);
+
+      var row = document.createElement("li");
+      row.appendChild(head);
+      row.appendChild(track);
+      el.bars.appendChild(row);
+    });
+  }
+
+  function render(data) {
+    el.badge.textContent = data.label;
+    el.badge.className = "badge " + (ACCENT[data.label] || "");
+    el.confidence.textContent = (data.confidence * 100).toFixed(1) + "% confidence";
+    renderBars(data.probabilities || {});
+    el.language.textContent = "Language: " + data.language +
+      (data.language_uncertain ? " (uncertain)" : "");
+    el.timing.textContent = Number(data.inference_ms).toFixed(1) + " ms";
+    el.result.hidden = false;
+  }
+
+  function classify() {
+    var text = el.message.value.trim();
+    clearError();
+
+    if (!text) {
+      showError("Enter a message first.");
+      return;
+    }
+    if (text.length > MAX_CHARS) {
+      showError("That message is " + text.length + " characters. The limit " +
+                "is " + MAX_CHARS + " — SMS messages are far shorter than this.");
+      return;
+    }
+
+    setLoading(true);
+
+    fetch("/v1/classify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text })
+    }).then(function (response) {
+      if (response.status === 422) {
+        showError("The server rejected that message. It must be between 1 " +
+                  "and " + MAX_CHARS + " characters.");
+        return null;
+      }
+      if (response.status === 503) {
+        showError("The classifier is not loaded yet. Wait a few seconds and " +
+                  "try again.");
+        return null;
+      }
+      if (!response.ok) {
+        showError("The server returned an error (" + response.status + "). " +
+                  "Try again in a moment.");
+        return null;
+      }
+      return response.json();
+    }).then(function (data) {
+      if (data) { render(data); }
+    }).catch(function () {
+      // Covers a dropped connection, DNS failure, and the service being
+      // down entirely -- fetch rejects rather than returning a status.
+      showError("Could not reach the classifier. Check your connection and " +
+                "try again.");
+    }).then(function () {
+      setLoading(false);
+    });
+  }
+
+  // Click only. Classifying on every keystroke would fire a request per
+  // character typed, which is both wasteful and unreadable as it rewrites
+  // the verdict mid-sentence.
+  el.check.addEventListener("click", classify);
+})();
+</script>
+</body>
+</html>

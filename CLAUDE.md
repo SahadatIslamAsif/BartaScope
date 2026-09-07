@@ -375,6 +375,52 @@ profile and refuses to write a row when more than half the requests failed.
 That defect — silently recording a dead service as a measurement — is how the
 seven zero rows got in.
 
+## Frontend
+
+`app/static/index.html` — one file, no framework, no build step, no CDN.
+Served by the API itself at `GET /` via a single `FileResponse`, not a
+`StaticFiles` mount: there is exactly one file, and mounting a directory
+would publish whatever later lands in it. Same origin as `/v1/classify`, so
+there is no CORS configuration to get wrong.
+
+Verified in a real browser against the container, not just asserted:
+phishing lure → red `phishing` badge at 97.0%; banglish personal message →
+neutral `normal` at 98.5% with `Language: banglish`. All four probabilities
+render as labelled bars in fixed order (not sorted by value) so positions
+stay comparable between messages.
+
+All three failure paths were exercised against a live browser:
+
+| case | how it was triggered | result |
+|---|---|---|
+| over 2000 chars | 2500-char value | counter turns red, error shown, no request sent |
+| network failure | `docker stop` mid-session | "Could not reach the classifier", button re-enabled |
+| model not loaded | container run with a bad `BARTASCOPE_MODEL_PATH` | 503 → "The classifier is not loaded yet" |
+
+**An error hides any previous verdict.** Found while testing: the stale
+`normal` card stayed on screen underneath the new error, directly below the
+message that had just failed, and the obvious reading is that the label
+describes *that* message. On a phishing classifier the dangerous version of
+that is a stale `normal`. `showError()` now hides the result card.
+
+The page classifies on click only, never on keystroke — one request per
+button press.
+
+**Loading state is sized for the cold start, not the warm path.** With
+min-instances 0 the first request pays the full ~4.3 s container start while
+every later one answers in single-digit milliseconds, so the button shows an
+animated spinner (not just a changed label — a static "Checking…" for four
+seconds reads as a hung page), and after 1200 ms a hint appears explaining
+that the classifier is starting up. Verified by delaying `fetch` in the page
+to 4300 ms: spinner and hint both appear, then clear on resolution. At normal
+speed the hint never renders at all — confirmed with a MutationObserver over
+a 7.4 ms request — so the fast path does not flicker. The spinner has a
+`prefers-reduced-motion` fallback that pulses instead of rotating.
+
+Note `inference_ms` in the footer is the server's own measurement, so it
+stays honest during a slow round trip: the delayed-fetch test still reported
+9.5 ms while the request took 4.3 s.
+
 ## Gotchas already discovered
 
 - **MiniLM needs XLM-R's tokenizer.** Its config declares no
@@ -433,10 +479,8 @@ seven zero rows got in.
 7. ~~**Load test**~~ — DONE against the local container; see above. Still
    outstanding: re-run against Cloud Run once item 6 lands, and against the
    PyTorch container, which has never been built.
-8. **Frontend** — titled Bartascope. Single paste box, verdict card
-   showing all four
-   probabilities, detected language, and inference time. Safety line:
-   advisory, not a guarantee; never share OTPs or PINs regardless.
+8. ~~**Frontend**~~ — DONE. `app/static/index.html`, served at `GET /` by
+   the same FastAPI app. See below.
 
 ## Rules
 

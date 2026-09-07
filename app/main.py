@@ -23,8 +23,10 @@ import os
 import time
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from app.metrics import metrics
 from app.model import MODEL_VERSION, Classifier
@@ -75,6 +77,25 @@ async def count_requests(request: Request, call_next):
     response = await call_next(request)
     metrics.record_request(request.url.path, response.status_code)
     return response
+
+
+INDEX_HTML = Path(__file__).resolve().parent / "static" / "index.html"
+
+
+@app.get("/", include_in_schema=False)
+async def index():
+    """The frontend, served from this same app.
+
+    One origin for the page and the API, so the browser treats /v1/classify
+    as same-origin and no CORS configuration exists to get wrong. A single
+    FileResponse rather than a StaticFiles mount: there is exactly one file,
+    and mounting a directory would also expose anything that later lands in
+    it.
+    """
+    if not INDEX_HTML.exists():
+        return JSONResponse(status_code=404,
+                            content={"detail": "frontend not installed"})
+    return FileResponse(INDEX_HTML, media_type="text/html")
 
 
 @app.get("/healthz", response_model=HealthResponse)
