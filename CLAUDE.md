@@ -297,6 +297,84 @@ preprocessing plus running on 2 threads instead of 6.
 16.14 ms p95 for the API and keep the model-only figure for the ONNX-vs-
 PyTorch comparison it was measured for.
 
+## Load test (k6, local container, 2 vCPU)
+
+`load/constant_arrival.js` and `load/idle_burst.js`, driven by
+`scripts/loadtest.py`. k6 runs in a container on `bartascope-net` and reaches
+the service by container name, keeping the host loopback and Windows port
+forwarding out of the measurement.
+
+**Max sustained rate at p95 < 50 ms: 90 rps.** Confirmed across two runs
+(p95 21.63 and 44.30 ms). Per message that is ~11 ms of budget on 2 vCPU.
+
+| target rps | achieved | p50 | p95 | p99 | errors |
+|---|---|---|---|---|---|
+| 40 | 40.0 | 8.04 | 14.40 | 16.78 | 0% |
+| 80 | 80.0 | 9.11 | 20.19 | 56.47 | 0% |
+| 85 | 85.0 | 8.90 | 17.84 | 33.56 | 0% |
+| **90** | **90.0** | **9.04** | **21.63** | 56.27 | 0% |
+| 95 | 95.0 | 24.81 | 351.66 | 395.55 | 0% |
+| 100 | 100.0 | 11.38 | 133.53 | 194.47 | 0% |
+| 120 | 118.3 | 329.53 | 1331.44 | 1987.65 | 0% |
+| 240 | 132.7 | 2362.82 | 42250.80 | 43558.54 | 0% |
+
+Three things this table says that a single number would not:
+
+- **95 rps is a knee, not a limit.** It measured 45.51 ms p95 in one run and
+  351.66 ms in another. Right at saturation the service is bimodal, so 90 is
+  the honest answer and anything above it is a coin flip.
+- **Throughput ceilings at ~130-140 rps** no matter what is offered. Offering
+  240 rps yields 132.7. One request occupies both intra-op threads, so
+  requests serialise rather than parallelise.
+- **Zero HTTP errors at every rate, including 240 rps.** It degrades by
+  queueing, not by failing: at 240 rps callers wait 42 seconds and still get
+  a correct answer. Nothing sheds load. A real deployment needs a timeout or
+  a concurrency limit, because a 42-second success is worse than a fast 503.
+
+**Warm up before the first measured step.** Without it the first rate step
+absorbs cold-process cost: 85 rps reported p95 64.12 ms cold and 17.84 ms
+warm, which reads as a capacity cliff that does not exist. `constant_arrival.js`
+now runs an untagged 15 s warm-up first. CSV rows from run_id
+`20260906T233438Z` predate that fix and their 85 rps step is cold-contaminated.
+
+Idle-then-burst, 60 s at 1 rps then a step change:
+
+| burst rate | idle p95 | burst p50 | burst p95 | worst request |
+|---|---|---|---|---|
+| 60 rps (sustainable) | 19.57 | 8.62 | **15.09** | 75.6 ms |
+| 150 rps (above capacity) | 15.30 | 1917.64 | 13327.56 | 20511 ms |
+
+Bursting from idle to a rate the service can serve costs essentially nothing
+— burst p95 came in *below* idle p95, and only the single worst request
+(75.6 ms) shows the wake-up. The 150 rps row is not a burst measurement, it
+is overload wearing a burst's clothing; do not quote it as burst cost. Note
+this profile is only fully meaningful on Cloud Run with min-instances 0,
+where the burst hits zero running instances. Locally nothing scales from
+zero.
+
+### The SIGSEGV
+
+The container died once with **exit code 139 (SIGSEGV)**, `OOMKilled=false`,
+during the first full load run — about 8 seconds into a 150 rps burst that
+followed a complete 40→240 rps ramp. Every subsequent measurement in that
+session was taken against a dead container and produced seven rows of zeros
+at 100% error, which were removed from the CSV.
+
+**It did not reproduce**, in two targeted attempts: 240 rps for 45 s, and the
+same idle→150 rps burst after a prior overload. Memory was flat throughout
+(522 → 529 MiB), so it is not a leak and not the OOM killer.
+
+So: one unexplained crash under sustained overload, not reproducible on
+demand. Do not describe it as a known crash bug, and do not describe the
+service as stable under overload either. If it recurs, the first suspects are
+concurrent `session.run` calls into one ORT session, and `PYTHONFAULTHANDLER=1`
+plus a core dump would be the way to find out.
+
+`scripts/loadtest.py` now checks container liveness before and after every
+profile and refuses to write a row when more than half the requests failed.
+That defect — silently recording a dead service as a measurement — is how the
+seven zero rows got in.
+
 ## Gotchas already discovered
 
 - **MiniLM needs XLM-R's tokenizer.** Its config declares no
@@ -352,9 +430,9 @@ PyTorch comparison it was measured for.
    reproducible.
 6. **Deploy** — Cloud Run as `bartascope-api`, min instances 0. Measure
    cold start honestly and put the number in the README.
-7. **Load test** — k6. Two profiles: constant-arrival-rate to find where
-   p95 breaks, and idle-then-burst for the scale-to-zero story. Run
-   against both containers.
+7. ~~**Load test**~~ — DONE against the local container; see above. Still
+   outstanding: re-run against Cloud Run once item 6 lands, and against the
+   PyTorch container, which has never been built.
 8. **Frontend** — titled Bartascope. Single paste box, verdict card
    showing all four
    probabilities, detected language, and inference time. Safety line:

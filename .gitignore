@@ -5,3 +5,5 @@ onnx_out/
 .venv/
 sym_shape_infer_temp.onnx
 *.data
+load/messages.json
+load/summary_*.json
