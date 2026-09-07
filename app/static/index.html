@@ -4,173 +4,293 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bartascope — SMS message type classifier</title>
-<!-- Inline SVG favicon: keeps the page to a single file and stops the
-     browser issuing a 404 for /favicon.ico on every load. -->
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>&#128242;</text></svg>">
+<!-- Tabler-style stroke icon, inline. Keeps the page to a single file and
+     stops the browser issuing a 404 for /favicon.ico on every load. -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%232B241E' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M8 9h8M8 13h6M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z'/></svg>">
 <style>
-/* Mobile-first. The only layout change on wider screens is a max-width, so
-   there is one column at every size and nothing to reflow. */
+/* Mobile-first. One column at every width; wider screens only gain a
+   max-width, so nothing reflows. Separation comes from white surfaces on the
+   warm wash -- there are no shadows anywhere in this design. */
 :root {
-  --bg: #f6f7f9;
-  --card: #ffffff;
-  --ink: #1a1d21;
-  --muted: #626a72;
-  --line: #dde1e6;
-  --accent: #2f5fd0;
-  --danger: #c0392b;
-  --danger-bg: #fdecea;
-  --warn: #a86612;
-  --warn-bg: #fdf3e2;
-  --neutral: #4a5058;
-  --neutral-bg: #eef0f3;
+  --wash: #EFEDE9;
+  --surface: #FFFFFF;
+  --ink: #2B241E;
+  --body: #4A4139;
+  --muted: #5D564E;
+  --faint: #726A62;
+  --hairline: #E2DDD5;
+  --accent: #6B4A34;
+  --track: #EDEAE4;
+
+  /* Cool on purpose, and the single documented exception to the warm ramp.
+     A warm wordmark rhymed with the verdict colours: the original #8A6A3F
+     sat 4.2 degrees from the promotional bar, and a burnt-sienna alternative
+     only moved the collision onto phishing at 12 degrees. Blue cannot
+     collide with any verdict, because every verdict colour is warm. Nearest
+     bar is now 159 degrees away. */
+  --wordmark-scope: #2F4A57;
+
+  --badge-phishing-bg: #E4D5D2;
+  --badge-phishing-fg: #7A2E1C;
+  --bar-phishing: #A03A22;
+
+  --badge-promotional-bg: #F5EBD8;
+  --badge-promotional-fg: #6E4B14;
+  --bar-promotional: #A67722;
+
+  --badge-neutral-bg: #EDEAE4;
+  --badge-neutral-fg: #4A4139;
+  --bar-neutral: #6B4A34;
+
+  --button-label: #FFFFFF;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #14171a;
-    --card: #1d2126;
-    --ink: #e9edf1;
-    --muted: #98a2ac;
-    --line: #2f353c;
-    --accent: #6f9bff;
-    --danger: #ff8a7a;
-    --danger-bg: #3a1f1c;
-    --warn: #f0b95f;
-    --warn-bg: #372a15;
-    --neutral: #b9c2cb;
-    --neutral-bg: #262c33;
+    --wash: #17130F;
+    --surface: #201A15;
+    --ink: #EFEAE3;
+    --body: #CFC6BB;
+    --muted: #9A8F82;
+    --faint: #8D8377;
+    --hairline: #302720;
+    --accent: #C4A184;
+    --track: #2A221C;
+
+    --wordmark-scope: #8FB4C4;
+
+    /* Badges keep their hue and invert: dark tinted fill, light text. */
+    --badge-phishing-bg: #5E3329;
+    --badge-phishing-fg: #F2B7A5;
+    --bar-phishing: #C9603F;
+
+    --badge-promotional-bg: #2E240E;
+    --badge-promotional-fg: #E9C688;
+    --bar-promotional: #C79A46;
+
+    --badge-neutral-bg: #2A221C;
+    --badge-neutral-fg: #CFC6BB;
+    --bar-neutral: #C4A184;
+
+    --button-label: #17130F;
   }
 }
+
 * { box-sizing: border-box; }
+
 body {
   margin: 0;
-  padding: 1.25rem 1rem 2.5rem;
-  background: var(--bg);
-  color: var(--ink);
-  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto,
+  padding: 24px 16px 40px;
+  background: var(--wash);
+  color: var(--body);
+  font: 400 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto,
         "Noto Sans Bengali", sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
-main { max-width: 34rem; margin: 0 auto; }
-h1 { font-size: 1.6rem; margin: 0 0 .3rem; letter-spacing: -.01em; }
-.subtext { margin: 0 0 1.25rem; color: var(--muted); font-size: .95rem; }
-label { display: block; font-weight: 600; font-size: .9rem; margin-bottom: .4rem; }
+main { max-width: 448px; margin: 0 auto; }
+
+/* Wordmark. The only weight 600 in the design, and --wordmark-scope is the
+   only place its colour appears. One element, one span, no gap: the join
+   between "Barta" and "scope" has to be seamless. */
+h1 {
+  margin: 0 0 3px;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+h1 span { color: var(--wordmark-scope); }
+
+.subtext {
+  margin: 0 0 20px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--body);
+}
+
 textarea {
   width: 100%;
-  min-height: 8.5rem;
-  padding: .75rem;
-  border: 1px solid var(--line);
-  border-radius: .5rem;
-  background: var(--card);
-  color: var(--ink);
-  font: inherit;
+  min-height: 74px;
+  padding: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--body);
+  font: 400 14px/1.5 inherit;
+  font-family: inherit;
   resize: vertical;
 }
+textarea::placeholder { color: var(--muted); }
 textarea:focus-visible, button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+
 .meta-row {
-  display: flex; justify-content: space-between; align-items: center;
-  gap: .75rem; margin: .4rem 0 1rem;
-  font-size: .8rem; color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0 16px;
+  font-size: 12px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
 }
-.counter.over { color: var(--danger); font-weight: 600; }
+.counter.over { color: var(--badge-phishing-fg); font-weight: 500; }
+
 button {
   width: 100%;
-  padding: .8rem 1rem;
+  height: 44px;
+  padding: 0 16px;
   border: 0;
-  border-radius: .5rem;
-  background: var(--accent);
-  color: #fff;
-  font: inherit;
-  font-weight: 600;
+  border-radius: 12px;
+  background: var(--ink);
+  color: var(--button-label);
+  font: 500 14px/1 inherit;
+  font-family: inherit;
   cursor: pointer;
 }
-button:disabled { opacity: .7; cursor: progress; }
-.btn-inner { display: inline-flex; align-items: center; gap: .5rem; justify-content: center; }
-/* Motion, not just a changed label. The first request after a scale-from-zero
-   cold start takes about 4.3 seconds, and a static "Checking..." for that long
-   reads as a hung page. A moving spinner is the difference between "working"
-   and "broken". */
+/* Disabled keeps the fill; only the label drops back. */
+button:disabled { opacity: 1; cursor: progress; }
+button:disabled .btn-inner { opacity: 0.6; }
+.btn-inner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* Motion, not just a changed label. A cold start takes about 4.3 seconds and
+   a static "Checking…" held that long reads as a hung page. */
 .spinner {
-  width: 1em; height: 1em;
-  border: 2px solid rgba(255, 255, 255, .4);
-  border-top-color: #fff;
+  width: 1em;
+  height: 1em;
+  border: 2px solid transparent;
+  border-top-color: currentColor;
+  border-right-color: currentColor;
   border-radius: 50%;
-  animation: spin .7s linear infinite;
+  animation: spin 0.7s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
-  /* Still needs to signal liveness without rotation. */
   .spinner { animation: pulse 1.2s ease-in-out infinite; }
-  @keyframes pulse { 50% { opacity: .25; } }
+  @keyframes pulse { 50% { opacity: 0.25; } }
 }
-.hint {
-  margin-top: .75rem;
-  padding: .7rem .9rem;
-  background: var(--neutral-bg);
+
+.hint, .error {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--surface);
+  font-size: 13px;
   color: var(--muted);
-  border-radius: .5rem;
-  font-size: .85rem;
-}
-.card {
-  margin-top: 1.5rem;
-  padding: 1.1rem;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: .6rem;
-}
-.verdict { display: flex; align-items: baseline; gap: .7rem; flex-wrap: wrap; }
-.badge {
-  display: inline-block;
-  padding: .3rem .7rem;
-  border-radius: 2rem;
-  font-weight: 700;
-  font-size: .95rem;
-  letter-spacing: .01em;
-  background: var(--neutral-bg);
-  color: var(--neutral);
-}
-.badge.phishing { background: var(--danger-bg); color: var(--danger); }
-.badge.promotional { background: var(--warn-bg); color: var(--warn); }
-.confidence { font-size: 1.05rem; font-weight: 600; }
-.bars { margin: 1.1rem 0 0; padding: 0; list-style: none; }
-.bars li { margin-bottom: .6rem; }
-.bar-label {
-  display: flex; justify-content: space-between;
-  font-size: .82rem; margin-bottom: .2rem; color: var(--muted);
-}
-.bar-label .name { color: var(--ink); }
-.track {
-  height: .5rem; border-radius: .25rem;
-  background: var(--neutral-bg); overflow: hidden;
-}
-.fill { height: 100%; background: var(--neutral); border-radius: .25rem; }
-.fill.phishing { background: var(--danger); }
-.fill.promotional { background: var(--warn); }
-.fill.accent { background: var(--accent); }
-.card-footer {
-  display: flex; justify-content: space-between; gap: .75rem; flex-wrap: wrap;
-  margin-top: 1rem; padding-top: .75rem;
-  border-top: 1px solid var(--line);
-  font-size: .82rem; color: var(--muted);
 }
 .error {
-  margin-top: 1.25rem; padding: .8rem 1rem;
-  background: var(--danger-bg); color: var(--danger);
-  border-radius: .5rem; font-size: .9rem;
+  border-color: var(--badge-phishing-bg);
+  background: var(--badge-phishing-bg);
+  color: var(--badge-phishing-fg);
 }
+
+.card {
+  margin-top: 20px;
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+}
+
+.verdict {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--badge-neutral-bg);
+  color: var(--badge-neutral-fg);
+}
+.badge.phishing {
+  background: var(--badge-phishing-bg);
+  color: var(--badge-phishing-fg);
+}
+.badge.promotional {
+  background: var(--badge-promotional-bg);
+  color: var(--badge-promotional-fg);
+}
+.confidence {
+  font-size: 14px;
+  color: var(--body);
+  font-variant-numeric: tabular-nums;
+}
+
+.bars { margin: 16px 0 0; padding: 0; list-style: none; }
+.bars li { margin-bottom: 12px; }
+.bars li:last-child { margin-bottom: 0; }
+.bar-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+/* The winning class is the only row that steps up to --body. */
+.bar-label.win { color: var(--body); }
+.track {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--track);
+  overflow: hidden;
+}
+.fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+}
+.fill.win-phishing { background: var(--bar-phishing); }
+.fill.win-promotional { background: var(--bar-promotional); }
+.fill.win-neutral { background: var(--bar-neutral); }
+
+.card-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+  font-size: 12px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
 .safety {
-  margin-top: 1.75rem; padding-top: 1rem;
-  border-top: 1px solid var(--line);
-  font-size: .82rem; color: var(--muted);
+  margin: 20px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--faint);
 }
-.safety strong { color: var(--ink); }
+.safety strong { font-weight: 500; color: var(--body); }
+
 [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Bartascope</h1>
+  <h1>Barta<span>scope</span></h1>
   <p class="subtext">
     Paste an SMS and Bartascope tells you what kind of message it is —
     personal, a service notification, advertising, or a phishing attempt.
@@ -301,13 +421,14 @@ button:disabled { opacity: .7; cursor: progress; }
     el.error.textContent = "";
   }
 
-  function renderBars(probabilities) {
+  function renderBars(probabilities, winner) {
     // Rebuild rather than mutate: four rows is cheap, and it keeps the DOM
     // and the response in step with no diffing logic.
     el.bars.textContent = "";
     LABELS.forEach(function (label) {
       var p = probabilities[label] || 0;
       var pct = (p * 100).toFixed(1);
+      var isWinner = label === winner;
 
       var name = document.createElement("span");
       name.className = "name";
@@ -317,12 +438,15 @@ button:disabled { opacity: .7; cursor: progress; }
       value.textContent = pct + "%";
 
       var head = document.createElement("div");
-      head.className = "bar-label";
+      head.className = "bar-label" + (isWinner ? " win" : "");
       head.appendChild(name);
       head.appendChild(value);
 
       var fill = document.createElement("div");
-      fill.className = "fill " + (ACCENT[label] || "accent");
+      // Only the winning row carries a verdict colour; the rest stay on the
+      // single accent so the card has one point of emphasis, not four.
+      fill.className = "fill" +
+        (isWinner ? " win-" + (ACCENT[label] || "neutral") : "");
       // Hairline for a near-zero probability, so every class stays visible
       // as a row rather than vanishing into the track.
       fill.style.width = Math.max(p * 100, 0.75) + "%";
@@ -342,7 +466,7 @@ button:disabled { opacity: .7; cursor: progress; }
     el.badge.textContent = data.label;
     el.badge.className = "badge " + (ACCENT[data.label] || "");
     el.confidence.textContent = (data.confidence * 100).toFixed(1) + "% confidence";
-    renderBars(data.probabilities || {});
+    renderBars(data.probabilities || {}, data.label);
     el.language.textContent = "Language: " + data.language +
       (data.language_uncertain ? " (uncertain)" : "");
     el.timing.textContent = Number(data.inference_ms).toFixed(1) + " ms";

@@ -456,6 +456,37 @@ that is a stale `normal`. `showError()` now hides the result card.
 The page classifies on click only, never on keystroke — one request per
 button press.
 
+### Palette: three corrections that were measured, not judged by eye
+
+The warm-grey design system was applied as specified except where it failed a
+stated constraint. Each correction has numbers behind it; do not revert one
+without re-running the check.
+
+**AA contrast.** `--muted` and `--faint` as originally specified could not
+carry 12–14px text on the wash: subtext 3.10, bar labels 3.63, footer meta
+2.77, safety line **2.37** — all against a 4.5 requirement. Darkened to
+`--muted #5D564E` and `--faint #726A62`. Worst case is now 4.54 and the three
+step ramp survives (body 8.53 / muted 6.18 / faint 4.54). Dark mode passed as
+given; `--faint` was undefined there and is `#8D8377` (4.97).
+
+**Phishing must not look like promotional in greyscale.** The specified badge
+fills were `#F3E3DF` and `#F5EBD8` — 2.3 L\* apart, i.e. identical without
+colour. Phishing darkened to `#E4D5D2`, gap now 8.0. Dark mode collided
+harder (0.5 L\*) and is `#5E3329` phishing / `#2E240E` promotional, gap 9.0.
+Bars were always fine at 13.5.
+
+**The wordmark must not rhyme with a verdict.** `scope` at `#8A6A3F` sat 4.2°
+from the promotional bar, and in dark mode `#C79A64` vs `#C79A46` differed
+only in the blue channel. A warm alternative does not fix this — burnt sienna
+`#8A5432` lands 12° from the *phishing* bar, trading the collision for a
+nearer one on the colour that matters most. The wordmark is therefore **cool**:
+`#2F4A57` light, `#8FB4C4` dark. Every verdict colour is warm, so a blue
+wordmark cannot collide with any of them: nearest bar is 159°, contrast 8.03
+and 8.35, clearing AA for normal text let alone the 3.0 large-text threshold.
+
+This is the one place a cool colour appears. Keep it that way — its whole job
+is to be the thing that is obviously not a verdict.
+
 **Loading state is sized for the cold start, not the warm path.** With
 min-instances 0 the first request pays the full ~4.3 s container start while
 every later one answers in single-digit milliseconds, so the button shows an
