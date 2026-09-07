@@ -26,6 +26,10 @@ class Metrics:
         self.requests_total = {}
         self.predictions_total = {}
         self.errors_total = {}
+        # Deliberate refusals, counted apart from errors. A shed request is
+        # the service working as designed under overload, not a fault, and
+        # blending the two hides both.
+        self.shed_total = {}
         self.messages_total = 0
         self.latency_buckets = {b: 0 for b in LATENCY_BUCKETS}
         self.latency_inf = 0
@@ -41,6 +45,11 @@ class Metrics:
         with self._lock:
             key = (endpoint, kind)
             self.errors_total[key] = self.errors_total.get(key, 0) + 1
+
+    def record_shed(self, endpoint: str, reason: str) -> None:
+        with self._lock:
+            key = (endpoint, reason)
+            self.shed_total[key] = self.shed_total.get(key, 0) + 1
 
     def record_prediction(self, label: str, language: str) -> None:
         with self._lock:
@@ -91,6 +100,16 @@ class Metrics:
                 lines.append(
                     f'bartascope_errors_total{{endpoint="{endpoint}",'
                     f'kind="{kind}"}} {n}')
+
+            lines += [
+                "# HELP bartascope_shed_total Requests refused under load, "
+                "by endpoint and reason.",
+                "# TYPE bartascope_shed_total counter",
+            ]
+            for (endpoint, reason), n in sorted(self.shed_total.items()):
+                lines.append(
+                    f'bartascope_shed_total{{endpoint="{endpoint}",'
+                    f'reason="{reason}"}} {n}')
 
             lines += [
                 "# HELP bartascope_inference_seconds Tokenisation plus ONNX "

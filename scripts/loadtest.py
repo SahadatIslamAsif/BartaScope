@@ -194,33 +194,44 @@ def main() -> None:
 
         summary = json.loads(
             (LOAD_DIR / "summary_constant.json").read_text(encoding="utf-8"))
-        print(f"\n  {'rate':>6} {'achieved':>9} {'p50':>8} {'p95':>8} "
-              f"{'p99':>8} {'max':>9} {'err%':>6} {'dropped':>8}")
-        print("  " + "-" * 70)
+        print()
+        print(f"  {'rate':>6} {'offered':>8} {'served/s':>9} {'p50':>8} "
+              f"{'p95':>8} {'p99':>8} {'max':>9} {'shed%':>7} {'err%':>6}")
+        print("  " + "-" * 82)
         for rate in [int(r) for r in args.rates.split(",")]:
+            # Served requests only. A shed 503 returns in microseconds, so
+            # blending them in would drag p95 down and make an overloaded
+            # service look faster than a healthy one.
             durations = summary["metrics"].get(
-                f"http_req_duration{{rate:{rate}}}", {}).get("values", {})
+                f"served_duration{{rate:{rate}}}", {}).get("values", {})
             iterations = metric(summary, f"iterations{{rate:{rate}}}", "count")
             dropped = metric(summary,
                              f"dropped_iterations{{rate:{rate}}}", "count")
             failed = metric(summary, f"http_req_failed{{rate:{rate}}}", "rate")
+            shed = metric(summary, f"shed{{rate:{rate}}}", "count")
+            served = max(iterations - shed, 0)
+            shed_pct = (shed / iterations * 100) if iterations else 0.0
             row = make_row(run_id, "k6-constant-arrival", machine,
-                           args.threads, f"target {rate} rps",
-                           args.stage_seconds, durations, iterations, failed,
+                           args.threads,
+                           f"target {rate} rps; shed {shed_pct:.1f}%; "
+                           f"p95 over served only",
+                           args.stage_seconds, durations, served, failed,
                            dropped)
             writer.writerow(row)
             fh.flush()
             rows.append((rate, row, durations.get("max", 0.0)))
-            print(f"  {rate:>6} {row['throughput_msg_s']:>9.1f} "
+            print(f"  {rate:>6} {iterations / args.stage_seconds:>8.1f} "
+                  f"{served / args.stage_seconds:>9.1f} "
                   f"{row['p50_ms']:>8.2f} {row['p95_ms']:>8.2f} "
                   f"{row['p99_ms']:>8.2f} {durations.get('max', 0):>9.1f} "
-                  f"{failed * 100:>6.2f} {int(dropped):>8}")
+                  f"{shed_pct:>7.1f} {failed * 100:>6.2f}")
 
         header(f"MAX SUSTAINED RATE AT p95 < {args.sla_ms:.0f} ms")
         passing = [(rate, row) for rate, row, _ in rows
                    if row["p95_ms"] < args.sla_ms
                    and row["throughput_msg_s"] >= rate * 0.95
-                   and "errors 0.00%" in row["notes"]]
+                   and "errors 0.00%" in row["notes"]
+                   and "shed 0.0%" in row["notes"]]
         if passing:
             best_rate, best = max(passing, key=lambda x: x[0])
             print(f"  {best_rate} rps   p95 {best['p95_ms']:.2f} ms   "

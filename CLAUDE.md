@@ -331,6 +331,56 @@ Three things this table says that a single number would not:
   a correct answer. Nothing sheds load. A real deployment needs a timeout or
   a concurrency limit, because a 42-second success is worse than a fast 503.
 
+### Load shedding (added after the first load test)
+
+The finding above — zero errors, 42-second waits, nothing shed — was fixed.
+`app/main.py` bounds in-flight inference with a semaphore, sheds with `503`
++ `Retry-After: 1` when a request waits longer than `QUEUE_TIMEOUT`, and caps
+a single inference at `INFERENCE_TIMEOUT`.
+
+| offered | | p50 | p95 | p99 | worst | shed |
+|---|---|---|---|---|---|---|
+| 90 | before | 9.04 | 21.63 | 56.27 | 164 ms | — |
+| 90 | after | 8.85 | 17.64 | 49.88 | 93 ms | 0% |
+| 120 | before | 329.53 | 1331.44 | 1987.65 | 3137 ms | — |
+| 120 | after | 176.84 | 213.41 | 233.86 | 276 ms | 3.5% |
+| 240 | before | 2362.82 | 42250.80 | 43558.54 | 44085 ms | — |
+| 240 | after | 211.69 | 257.17 | 272.94 | 313 ms | 58.1% |
+
+164× better p95 at 240 rps, bought by refusing 58% of it. Sustainable load is
+untouched: 90 rps sheds nothing and p95 slightly improves.
+
+**It also removed the bimodality.** Before shedding, 95 rps measured p95
+45.51 ms in one run and 351.66 ms in another — the knee was a coin flip. After,
+two independent runs agree to within 3 ms at both overload rates (120 rps:
+213.41 / 213.13; 240 rps: 257.17 / 260.24). The unbounded queue was generating
+the variance, so bounding it made overload behaviour reproducible. Both runs
+are in the CSV; do not treat the second as a duplicate to be cleaned up.
+
+**Inference had to move off the event loop for any of this to work.** It ran
+inline in the `async def` handler, which blocks the loop for the duration —
+so a timeout could never fire, because the loop that would fire it was
+blocked by the call it was guarding. It now runs in a worker thread
+(`run_in_threadpool`); ORT releases the GIL inside `Run`, so that is a real
+thread. The anyio thread limiter is capped to `MAX_CONCURRENCY` as well: left
+at its default of 40 it would run 40 concurrent inferences, each with a
+full-width ORT pool, which is the oversubscription that corrupted the
+benchmark tails.
+
+Defaults, all overridable by env var: `MAX_CONCURRENCY` = thread count (2 in
+the container), `QUEUE_TIMEOUT_MS` = 200, `INFERENCE_TIMEOUT_MS` = 2000.
+Worst-case latency is therefore bounded at roughly queue timeout plus one
+inference, which is what the 276-313 ms maxima show. **Tightening
+`QUEUE_TIMEOUT_MS` buys a lower p95 under overload at the cost of shedding
+more** — 200 ms was chosen to sit far below the 1331 ms regime while leaving
+sustainable traffic untouched.
+
+`shed` is counted apart from errors in `/metrics`
+(`bartascope_shed_total{reason=...}`), and `constant_arrival.js` treats 503
+as an expected status while recording latency in a separate `served_duration`
+trend — blending fast 503s into `http_req_duration` would drag p95 down and
+make an overloaded service look faster than a healthy one.
+
 **Warm up before the first measured step.** Without it the first rate step
 absorbs cold-process cost: 85 rps reported p95 64.12 ms cold and 17.84 ms
 warm, which reads as a capacity cliff that does not exist. `constant_arrival.js`

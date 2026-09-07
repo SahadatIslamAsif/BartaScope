@@ -21,6 +21,19 @@
 import http from 'k6/http';
 import { check } from 'k6';
 import { SharedArray } from 'k6/data';
+import { Counter, Trend } from 'k6/metrics';
+
+// A 503 from the load shedder is the service working correctly under
+// overload, not a failure. Counting it as one would make a healthy shedding
+// service look broken, and would also bury the thing worth measuring: how
+// fast the requests it DID serve came back.
+http.setResponseCallback(http.expectedStatuses(200, 503));
+
+// Latency of served requests only. Shed responses return in microseconds, so
+// blending them into http_req_duration would drag p95 down and make an
+// overloaded service look faster than a healthy one.
+const served = new Trend('served_duration', true);
+const shed = new Counter('shed');
 
 const messages = new SharedArray('messages', () =>
   JSON.parse(open('/work/messages.json')));
@@ -80,6 +93,10 @@ RATES.forEach((rate, i) => {
     [{ threshold: 'count>=0', abortOnFail: false }];
   thresholds[`dropped_iterations{rate:${rate}}`] =
     [{ threshold: 'count>=0', abortOnFail: false }];
+  thresholds[`served_duration{rate:${rate}}`] =
+    [{ threshold: 'p(95)<600000', abortOnFail: false }];
+  thresholds[`shed{rate:${rate}}`] =
+    [{ threshold: 'count>=0', abortOnFail: false }];
 });
 
 export const options = {
@@ -94,9 +111,15 @@ export function classify() {
   const res = http.post(`${BASE_URL}/v1/classify`,
     JSON.stringify({ text: text }),
     { headers: { 'Content-Type': 'application/json' } });
+  if (res.status === 200) {
+    served.add(res.timings.duration);
+  } else if (res.status === 503) {
+    shed.add(1);
+  }
   check(res, {
-    'status 200': (r) => r.status === 200,
-    'has label': (r) => r.status === 200 && r.json('label') !== undefined,
+    'served or shed': (r) => r.status === 200 || r.status === 503,
+    'has label when served': (r) =>
+      r.status !== 200 || r.json('label') !== undefined,
   });
 }
 
