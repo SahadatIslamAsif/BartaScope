@@ -88,6 +88,33 @@ body {
 }
 main { max-width: 448px; margin: 0 auto; }
 
+/* Below 900px .col-left and .col-right are plain divs with no layout rules
+   of their own, so they fall back to normal block flow: col-left's children
+   render top to bottom, then col-right's -- which, because col-right holds
+   the result card and the safety line (in that DOM order), reproduces the
+   original single-column stacking exactly. The two-column CSS below only
+   takes effect at 900px and up. */
+.empty-state {
+  margin-top: 20px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+@media (min-width: 900px) {
+  body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+  }
+  main { max-width: 1100px; width: 100%; }
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+    align-items: start;
+  }
+}
+
 /* Wordmark. The only weight 600 in the design, and --wordmark-scope is the
    only place its colour appears. One element, one span, no gap: the join
    between "Barta" and "scope" has to be seamless. */
@@ -117,6 +144,11 @@ label {
 textarea {
   width: 100%;
   min-height: 74px;
+  /* Auto-grow is JS-driven (scrollHeight, capped at 320px); the manual
+     resize grabber is removed because it fights that -- a user drag would
+     be silently overwritten on the next keystroke. */
+  max-height: 320px;
+  overflow-y: auto;
   padding: 12px;
   border: 1px solid var(--hairline);
   border-radius: 12px;
@@ -124,7 +156,7 @@ textarea {
   color: var(--body);
   font: 400 14px/1.5 inherit;
   font-family: inherit;
-  resize: vertical;
+  resize: none;
 }
 textarea::placeholder { color: var(--muted); }
 textarea:focus-visible, button:focus-visible {
@@ -290,44 +322,55 @@ button:disabled .btn-inner { opacity: 0.6; }
 </head>
 <body>
 <main>
-  <h1>Barta<span>scope</span></h1>
-  <p class="subtext">
-    Paste an SMS and Bartascope tells you what kind of message it is —
-    personal, a service notification, advertising, or a phishing attempt.
-  </p>
+<div class="layout">
+  <div class="col-left">
+    <h1>Barta<span>scope</span></h1>
+    <p class="subtext">
+      Paste an SMS and Bartascope tells you what kind of message it is —
+      personal, a service notification, advertising, or a phishing attempt.
+    </p>
 
-  <label for="message">Message</label>
-  <textarea id="message" maxlength="4000"
-    placeholder="আপনার bKash অ্যাকাউন্ট বন্ধ হয়ে যাবে, এখনই যাচাই করুন…&#10;Your OTP is 123456. Do not share it with anyone."></textarea>
+    <label for="message">Message</label>
+    <textarea id="message" maxlength="4000" rows="1"
+      placeholder="আপনার bKash অ্যাকাউন্ট বন্ধ হয়ে যাবে, এখনই যাচাই করুন…&#10;Your OTP is 123456. Do not share it with anyone."></textarea>
 
-  <div class="meta-row">
-    <span id="counter" class="counter">0 / 2000</span>
-    <span>One message at a time</span>
+    <div class="meta-row">
+      <span id="counter" class="counter">0 / 2000</span>
+      <span>One message at a time</span>
+    </div>
+
+    <button id="check" type="button"><span class="btn-inner">Check message</span></button>
+
+    <div id="hint" class="hint" role="status" hidden></div>
+    <div id="error" class="error" role="alert" hidden></div>
   </div>
 
-  <button id="check" type="button"><span class="btn-inner">Check message</span></button>
+  <div class="col-right">
+    <!-- Shown until the first result ever arrives, then hidden for good;
+         render() hides it and it is never re-shown, including on a later
+         error -- an error already has its own message in the left column. -->
+    <p id="empty-state" class="empty-state">Your result will appear here.</p>
 
-  <div id="hint" class="hint" role="status" hidden></div>
-  <div id="error" class="error" role="alert" hidden></div>
+    <section id="result" class="card" aria-live="polite" hidden>
+      <div class="verdict">
+        <span id="badge" class="badge"></span>
+        <span id="confidence" class="confidence"></span>
+      </div>
+      <ul id="bars" class="bars"></ul>
+      <div class="card-footer">
+        <span id="language"></span>
+        <span id="timing"></span>
+      </div>
+    </section>
 
-  <section id="result" class="card" aria-live="polite" hidden>
-    <div class="verdict">
-      <span id="badge" class="badge"></span>
-      <span id="confidence" class="confidence"></span>
-    </div>
-    <ul id="bars" class="bars"></ul>
-    <div class="card-footer">
-      <span id="language"></span>
-      <span id="timing"></span>
-    </div>
-  </section>
-
-  <p class="safety">
-    <strong>Advisory only.</strong> This is a model's best guess, not a
-    guarantee — it can be wrong in both directions. Whatever it says,
-    <strong>never share an OTP, PIN or password with anyone</strong>, and
-    never enter one on a page you reached from a link in a message.
-  </p>
+    <p class="safety">
+      <strong>Advisory only.</strong> This is a model's best guess, not a
+      guarantee — it can be wrong in both directions. Whatever it says,
+      <strong>never share an OTP, PIN or password with anyone</strong>, and
+      never enter one on a page you reached from a link in a message.
+    </p>
+  </div>
+</div>
 </main>
 
 <script>
@@ -347,12 +390,17 @@ button:disabled .btn-inner { opacity: 0.6; }
   // never shows it and makes the page flicker.
   var SLOW_MS = 1200;
 
+  // Matches the textarea's CSS max-height. Past this it scrolls instead of
+  // growing further.
+  var MESSAGE_MAX_HEIGHT = 320;
+
   var el = {
     message: document.getElementById("message"),
     counter: document.getElementById("counter"),
     check: document.getElementById("check"),
     hint: document.getElementById("hint"),
     error: document.getElementById("error"),
+    emptyState: document.getElementById("empty-state"),
     result: document.getElementById("result"),
     badge: document.getElementById("badge"),
     confidence: document.getElementById("confidence"),
@@ -366,8 +414,27 @@ button:disabled .btn-inner { opacity: 0.6; }
     el.counter.textContent = n + " / " + MAX_CHARS;
     el.counter.classList.toggle("over", n > MAX_CHARS);
   }
-  el.message.addEventListener("input", updateCounter);
-  updateCounter();
+
+  function autoGrowMessage() {
+    // Reset before measuring, or scrollHeight only ever grows: shrinking the
+    // textarea (e.g. clearing it, or deleting a pasted block) would never be
+    // reflected without this.
+    el.message.style.height = "auto";
+    var next = Math.min(el.message.scrollHeight, MESSAGE_MAX_HEIGHT);
+    el.message.style.height = next + "px";
+  }
+
+  function onMessageChanged() {
+    updateCounter();
+    autoGrowMessage();
+  }
+
+  // The 'input' event covers typing, paste, drag-drop and programmatic
+  // `.value =` assignment followed by a dispatched Event('input') -- which is
+  // how this file's own browser tests drive the textarea. A dedicated
+  // 'paste' listener would be redundant and would double-fire alongside it.
+  el.message.addEventListener("input", onMessageChanged);
+  onMessageChanged();
 
   var slowTimer = null;
 
@@ -470,6 +537,7 @@ button:disabled .btn-inner { opacity: 0.6; }
     el.language.textContent = "Language: " + data.language +
       (data.language_uncertain ? " (uncertain)" : "");
     el.timing.textContent = Number(data.inference_ms).toFixed(1) + " ms";
+    el.emptyState.hidden = true;
     el.result.hidden = false;
   }
 
