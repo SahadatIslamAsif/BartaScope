@@ -9,11 +9,17 @@
 # Those belong to the export, evaluation and benchmarking scripts, which run
 # on a workstation, not in the container.
 #
+# transformers is also absent. Its import alone cost ~385 MB RSS (measured),
+# dwarfing the model, for a dependency only ever used here to call
+# AutoTokenizer.from_pretrained(). tokenizers.Tokenizer.from_file() loads the
+# same tokenizer.json and was verified byte-identical against AutoTokenizer
+# on all 200 test messages (scripts/verify_tokenizer_parity.py) before this
+# was cut. See app/model.py.
+#
 # Pinned to what was measured locally. An unpinned onnxruntime is an
 # unannounced change to every latency number in benchmarks/latency.csv.
 
 onnxruntime==1.29.0
-transformers==5.16.1
 tokenizers==0.23.2
 fastapi==0.141.1
 uvicorn[standard]==0.52.4

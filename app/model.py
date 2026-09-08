@@ -6,6 +6,15 @@ a session per request would dominate the latency budget entirely -- the
 whole point of the ONNX work is that inference costs single-digit
 milliseconds, and session creation costs hundreds.
 
+Tokenisation uses the `tokenizers` package directly (Tokenizer.from_file)
+rather than transformers.AutoTokenizer -- transformers' import alone cost
+~385 MB RSS, dwarfing the model. scripts/verify_tokenizer_parity.py confirmed
+byte-identical input_ids/attention_mask against AutoTokenizer across all 200
+test messages before this switch was made. Truncation (max_length=64) and
+the special-token template are baked into tokenizer.json itself, but padding
+is not (padding: null in the file), so it is enabled explicitly below to
+reproduce padding="longest".
+
 Thread configuration is deliberate. intra_op_num_threads is set from
 BARTASCOPE_THREADS, which should equal the container's CPU limit. Running
 several uvicorn workers that each spawn a full-width ORT thread pool
@@ -50,7 +59,7 @@ class Classifier:
 
     def load(self) -> None:
         import onnxruntime as ort
-        from transformers import AutoTokenizer
+        from tokenizers import Tokenizer
 
         t0 = time.perf_counter()
         if not self.model_path.exists():
@@ -65,7 +74,12 @@ class Classifier:
         self._session = ort.InferenceSession(
             str(self.model_path), opts, providers=["CPUExecutionProvider"])
         self._input_names = [i.name for i in self._session.get_inputs()]
-        self._tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_dir)
+
+        tokenizer_json = Path(self.tokenizer_dir) / "tokenizer.json"
+        self._tokenizer = Tokenizer.from_file(str(tokenizer_json))
+        self._tokenizer.enable_truncation(max_length=self.max_length)
+        self._tokenizer.enable_padding(
+            pad_id=self._tokenizer.token_to_id("<pad>"), pad_token="<pad>")
 
         self.load_seconds = round(time.perf_counter() - t0, 3)
         self.loaded_at = time.time()
@@ -88,9 +102,12 @@ class Classifier:
         cleaned = [normalise(t) for t in texts]
 
         t0 = time.perf_counter()
-        enc = self._tokenizer(
-            cleaned, return_tensors="np", padding="longest",
-            truncation=True, max_length=self.max_length)
+        encodings = self._tokenizer.encode_batch(cleaned)
+        enc = {
+            "input_ids": np.array([e.ids for e in encodings], dtype=np.int64),
+            "attention_mask": np.array(
+                [e.attention_mask for e in encodings], dtype=np.int64),
+        }
         feed = {n: enc[n] for n in self._input_names}
         logits = self._session.run(["logits"], feed)[0]
         inference_ms = (time.perf_counter() - t0) * 1000.0

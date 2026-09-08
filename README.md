@@ -209,17 +209,25 @@ cannot drift.
 
 | measurement | value | meaning |
 |---|---|---|
-| `docker images` | 1.41 GB | uncompressed + attestation. Misleading, don't quote it. |
-| `docker image inspect .Size` | **523 MB** | compressed — what a node pulls |
-| `du -sm /` inside | 838 MB | disk while running |
+| `docker images` | 1.33 GB disk / 511 MB content | uncompressed + attestation. Misleading, don't quote it. |
+| `docker image inspect .Size` | **511 MB** | compressed — what a node pulls |
+| `du -sm /` inside | 772 MB | disk while running |
 
-Multi-stage, **torch excluded from the runtime image** — the container logs
-`[transformers] PyTorch was not found` on startup. Torch is needed to
+Multi-stage, **torch excluded from the runtime image**. Torch is needed to
 *produce* the ONNX graph, never to run it, and including it would add ~2 GB
 for code that would never execute.
 
-The model is 489 MB of the 523 MB, so dependency trimming has little headroom
-left.
+`transformers` is excluded too, as of this measurement. It was only ever
+used to call `AutoTokenizer.from_pretrained()`; swapping in the raw
+`tokenizers` package (`Tokenizer.from_file`, verified byte-identical
+tokenisation first) dropped site-packages from 247 MB to **181 MB**. That's
+a 66 MB uncompressed win, but only 12 MB of it survives compression (523 MB
+→ 511 MB pulled) — `transformers` is mostly plain-Python source, which gzips
+hard, so most of the saving doesn't show up in pull size even though it's
+real on disk.
+
+The model is 467 MB of the 511 MB, so dependency trimming has little
+remaining headroom.
 
 **Cold start: 4.30 s median** (`docker run` → `/readyz` 200, `--cpus 2`,
 three runs: 4.04 / 4.30 / 4.48), of which ~1.8 s is loading the model. The

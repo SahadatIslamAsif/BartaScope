@@ -53,11 +53,6 @@ ENV BARTASCOPE_MODEL_PATH=/app/onnx_out/model.onnx \
 # A number here would bake in the build machine's shape instead.
 ENV BARTASCOPE_THREADS=""
 
-# transformers must never reach the network at runtime. The tokenizer is baked
-# into the image; a hub lookup would turn a cold start into a DNS timeout.
-ENV HF_HUB_OFFLINE=1 \
-    TRANSFORMERS_OFFLINE=1
-
 COPY --from=builder /opt/venv /opt/venv
 
 # Create the user BEFORE copying anything into /app. A `chown -R /app` after

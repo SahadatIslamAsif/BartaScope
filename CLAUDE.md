@@ -241,23 +241,38 @@ CSV keeps it, tagged `combined single-process run` — ignore those rows.
 Image `bartascope`, built from `Dockerfile`. Docker reports three different
 sizes and they mean different things — quote the right one:
 
-| measurement | value | meaning |
+| measurement | value (was) | meaning |
 |---|---|---|
-| `docker images` | 1.41 GB | uncompressed layers + attestation manifests. **Misleading, do not quote.** |
-| `docker image inspect .Size` | **523 MB** | compressed layers — what a node pulls |
-| `du -sm /` in the container | 838 MB | disk footprint while running |
+| `docker images` | 1.33 GB disk / 511 MB content (was 1.41 GB) | uncompressed layers + attestation manifests. **Misleading, do not quote.** Column layout changed with Docker CLI 29.7.2; treat as informational only. |
+| `docker image inspect .Size` | **511 MB** (was 523 MB) | compressed layers — what a node pulls |
+| `du -sm /` in the container | 772 MB (was 838 MB) | disk footprint while running |
 
-Against the ~600 MB expectation: **523 MB pulled, under target; 838 MB on
-disk, over it.** The pull size is what governs cold start on Cloud Run.
+Against the ~600 MB expectation: **511 MB pulled, under target; 772 MB on
+disk, still over it but less so.** The pull size is what governs cold start
+on Cloud Run.
 
-Composition: model payload 489 MB (`model.onnx.data` 470.6 + `tokenizer.json`
-16.8 + graph 1.5), site-packages 247 MB, Debian slim + Python ~100 MB. The
-model is 58% of the image, so dependency trimming has limited headroom —
-dropping `transformers` in favour of raw `tokenizers` would save roughly
-85 MB and is the only remaining lever worth considering.
+Composition (re-measured after dropping `transformers`, below): model
+payload 467 MB (`model.onnx.data` 449 + `tokenizer.json` 17 + graph 2),
+site-packages **181 MB (was 247 MB)**, Debian slim + Python ~100 MB. The
+model is now 60% of the image, up from 58%, because everything else got
+smaller and it didn't.
 
-torch is confirmed absent: the container logs
-`[transformers] PyTorch was not found` on startup.
+**Dropping `transformers` for raw `tokenizers` — done, and measured, not the
+~85 MB guessed earlier.** Verified byte-identical tokenisation first
+(`scripts/verify_tokenizer_parity.py`, all 200 test messages, single and
+batched) before touching `app/model.py`. Actual result: site-packages
+**−66 MB** uncompressed (247 → 181), but only **−12 MB** on the compressed
+pull size (523 → 511). `transformers` is almost entirely plain-Python source,
+which gzip already compresses hard, so most of the uncompressed win doesn't
+show up in what a node actually pulls. The uncompressed win is still real —
+it's what a disk-constrained host feels — just don't expect it to track the
+compressed number.
+
+torch was already confirmed absent via the `[transformers] PyTorch was not
+found` startup log. That log line is now gone too, for the more direct
+reason that `transformers` itself is no longer installed — confirmed by
+`docker logs` on a fresh container showing no such line, and by
+`requirements-runtime.txt` no longer listing it.
 
 **The `chown -R` trap, since it will recur.** An early build was 928 MB
 because `RUN useradd ... && chown -R bartascope:bartascope /app` came after
