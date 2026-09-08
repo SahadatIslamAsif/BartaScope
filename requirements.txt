@@ -1,0 +1,16 @@
+# Dependencies for streamlit_app.py, read by Streamlit Community Cloud from
+# the repo root by default. Deliberately separate from requirements-runtime.txt
+# (the Docker/FastAPI image): this app needs streamlit and pydantic (for
+# app/schemas.py's MAX_CHARS) but not fastapi or uvicorn, and that image
+# needs neither pydantic's web-framework siblings nor streamlit.
+#
+# transformers is absent for the same reason it was dropped from the Docker
+# image: see CLAUDE.md's Container section and scripts/measure_memory.py.
+# On this host the saving is not optional -- without it the model does not
+# fit under the ~1 GB limit.
+
+streamlit==1.63.0
+onnxruntime==1.29.0
+tokenizers==0.23.2
+numpy==2.5.3
+pydantic==2.13.5
