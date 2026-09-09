@@ -8,9 +8,14 @@
 # image: see CLAUDE.md's Container section and scripts/measure_memory.py.
 # On this host the saving is not optional -- without it the model does not
 # fit under the ~1 GB limit.
+#
+# huggingface_hub is here only to pull the model at container start
+# (streamlit_app.py's _resolve_model_dir) -- it is a thin HTTP client, not
+# the transformers stack, and costs single-digit MB.
 
 streamlit==1.63.0
 onnxruntime==1.29.0
 tokenizers==0.23.2
 numpy==2.5.3
 pydantic==2.13.5
+huggingface_hub==1.30.0

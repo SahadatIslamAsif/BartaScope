@@ -517,6 +517,54 @@ Note `inference_ms` in the footer is the server's own measurement, so it
 stays honest during a slow round trip: the delayed-fetch test still reported
 9.5 ms while the request took 4.3 s.
 
+## Deploy: Streamlit Community Cloud, model hosted on Hugging Face
+
+`streamlit_app.py` is what gets deployed (see item 6 of Remaining work for
+why Cloud Run, Fly.io, HF Spaces and Render were all ruled out first). It is
+a separate frontend from `app/static/index.html`, not a copy of it — see the
+module docstring in `streamlit_app.py` for why (single process, no HTTP API,
+`transformers` already dropped for the same memory reason as the Docker
+image).
+
+**The model-hosting problem.** `onnx_out/` is gitignored, and Streamlit
+Community Cloud deploys by cloning this git repo, so the 472 MB model isn't
+there to load at `import` time the way it is locally. Two fixes were
+considered and Git LFS was rejected: LFS's free bandwidth quota is 1 GB/month
+against a 472 MB artifact, and Streamlit re-clones the repo on every
+redeploy, so two redeploys in a month exhausts the quota. **Chosen instead:
+pull the model from a public Hugging Face model repo at container start**,
+via `huggingface_hub.hf_hub_download` — HF's CDN has no comparable bandwidth
+cap on public repos.
+
+Implementation is `streamlit_app.py`'s `_resolve_model_dir()`:
+- `BARTASCOPE_HF_REPO` (env var) names the HF model repo, e.g.
+  `<hf-username>/bartascope-minilm`. `BARTASCOPE_HF_REVISION` defaults to
+  `main`.
+- Downloads `model.onnx`, `model.onnx.data` and `tokenizer.json` via
+  `hf_hub_download`, one call per file, all landing in the same on-disk
+  snapshot directory (required — `model.onnx` references `model.onnx.data`
+  by relative filename, so ORT needs them side by side).
+- Wrapped in `@st.cache_resource`, so the download and the ORT session
+  creation each run exactly once per container, no matter how many visitors
+  hit it or how many times the script reruns per session — not a hand-rolled
+  cache, `st.cache_resource` already guarantees this.
+- On any failure (missing repo, private repo, network error), raises a
+  `RuntimeError` naming the repo, the revision and the underlying error
+  rather than swallowing it — verified by pointing `BARTASCOPE_HF_REPO` at a
+  nonexistent repo and confirming the app surfaces `st.error` with that exact
+  message rather than a bare 401 traceback or a silently broken result card.
+- `BARTASCOPE_MODEL_PATH` + `BARTASCOPE_TOKENIZER_DIR` (both set) bypass the
+  download entirely, unchanged from before this feature existed — this is
+  what running locally against `onnx_out/` still does, and what a future
+  local-path override would use.
+- **Cold-start cost is reported in the app itself**, not just measured
+  offline: the first request a fresh container serves shows a caption with
+  the HF download time and the ORT session-load time separately, so the
+  number is visible without SSHing into anything. **Not yet measured against
+  the real deployed repo** — no HF repo exists yet as of this writing; do not
+  quote a number here until one has actually been observed post-deploy, and
+  when it is, record it in this section rather than leaving it as "TBD".
+
 ## Gotchas already discovered
 
 - **MiniLM needs XLM-R's tokenizer.** Its config declares no
@@ -570,11 +618,25 @@ stays honest during a slow round trip: the delayed-fetch test still reported
    (onnxruntime + tokenizers + fastapi ≈ 350 MB vs 2 GB+). Keep a second
    Dockerfile with the PyTorch build so the before/after benchmark is
    reproducible.
-6. **Deploy** — Cloud Run as `bartascope-api`, min instances 0. Measure
-   cold start honestly and put the number in the README.
-7. ~~**Load test**~~ — DONE against the local container; see above. Still
-   outstanding: re-run against Cloud Run once item 6 lands, and against the
-   PyTorch container, which has never been built.
+6. **Deploy** — Cloud Run, Fly.io, Hugging Face Spaces and Render were all
+   ruled out: Cloud Run requires a card on file even on the free tier, and
+   Fly/Spaces/Render's free tiers have either been removed or don't have
+   enough memory for a 472 MB model process. The deploy target is
+   **Streamlit Community Cloud** instead — free, no card, ~1 GB memory,
+   sleeps after 12 hours idle, requires a public repo. This is a materially
+   different shape than the original FastAPI-on-Cloud-Run plan: Streamlit
+   runs the app and the model in one process (`streamlit_app.py`), not a
+   separate API a load-test harness can hit over HTTP, so "measure cold
+   start and put it in the README" now means the in-app cold-start report
+   (see below), not a k6 run. See below for the model-hosting problem this
+   introduced, and the exact deploy steps.
+7. ~~**Load test**~~ — DONE against the local Docker container; see above.
+   **Will not be re-run against Cloud Run** — Cloud Run is no longer the
+   deploy target (see item 6). It will also not be re-run against
+   Streamlit: k6 drives HTTP requests, and Streamlit Community Cloud has no
+   HTTP API to target, only the rendered page. The PyTorch container
+   (`Dockerfile.pytorch`) has still never been built, so that comparison
+   remains outstanding independent of the deploy-target change.
 8. ~~**Frontend**~~ — DONE. `app/static/index.html`, served at `GET /` by
    the same FastAPI app. See below.
 
