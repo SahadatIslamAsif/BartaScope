@@ -1,361 +1,278 @@
 # Bartascope
 
-Paste an SMS, find out what kind of message it is: personal, a genuine
-service notification, advertising, or a phishing attempt. Bangla, English,
-banglish and code-mixed messages all go through the same model.
+> Paste an SMS, find out what kind of message it is — personal, a genuine service notification, advertising, or a phishing attempt. Bangla, English, banglish and code-mixed text all go through the same model.
 
-The **engineering** is the deliverable — ONNX export and optimisation, a
-FastAPI service, Docker, load testing — not the accuracy. Accuracy was
-already near this dataset's ceiling before any of that started.
+![version](https://img.shields.io/badge/version-1.0.0-blue)
+![license](https://img.shields.io/badge/license-MIT-green)
+[![python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![fastapi](https://img.shields.io/badge/FastAPI-service-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![onnxruntime](https://img.shields.io/badge/ONNX%20Runtime-inference-005CED?logo=onnx&logoColor=white)](https://onnxruntime.ai/)
+[![docker](https://img.shields.io/badge/Docker-523%20MB-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![huggingface](https://img.shields.io/badge/%F0%9F%A4%97-MiniLM%20L12--H384-yellow)](https://huggingface.co/)
+![k6](https://img.shields.io/badge/k6-load%20tested-7D64FF?logo=k6&logoColor=white)
 
-```bash
-docker build -t bartascope .
-docker run --rm -p 8080:8080 --cpus 2 bartascope
-# then open http://localhost:8080
-```
+**App Live Link**: https://bartascope.streamlit.app/
+
+---
+
+## Why & What
+
+- **The problem:** phishing SMS in Bangladesh mimics real bank and MFS alerts closely enough that people can't reliably tell them apart, and existing spam filters are built for English.
+- **What Bartascope does:** classifies any pasted message — Bangla, English, or mixed — into normal, transactional, promotional, or phishing, in single-digit milliseconds.
+- **What this project is actually about:** the engineering, not the accuracy. Pretrained model → ONNX export → optimization → a production FastAPI microservice → Docker → load testing → deployment. Every number below was measured, not assumed, and the two least comfortable findings are reported as plainly as the ones that look good.
+- **The honest headline:** a 5 MB logistic regression beats the deployed 118M-parameter transformer on accuracy, at 23× lower latency. That's in here on purpose — see [What this project actually found](#what-this-project-actually-found).
+
+> Building on this? `CLAUDE.md` is the full working log — every measurement, every rejected approach, and why.
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Model | `microsoft/Multilingual-MiniLM-L12-H384`, fine-tuned |
+| Inference | ONNX Runtime (fp32), served via `onnxruntime` — no torch in the runtime image |
+| Tokenizer | `tokenizers` (raw, not `transformers` — see below) |
+| Service | FastAPI, async, ORT session loaded once in `lifespan` |
+| Load shedding | `asyncio.Semaphore` + threadpool inference + bounded queue timeout |
+| Container | Multi-stage Docker, 523 MB pulled |
+| Load testing | k6, two profiles (constant arrival rate, idle-then-burst) |
+| Frontend | Two builds — a static page served by FastAPI, and a Streamlit app for the free public deploy |
+| Model hosting | Hugging Face model repo (weights are too large for free GitHub LFS) |
+| Baseline | TF-IDF char n-grams + logistic regression, `scikit-learn` |
 
 ---
 
 ## What this project actually found
 
-Three results here cut against the story the project set out to tell. They
-are the most interesting things in it, so they go first rather than in an
-appendix.
+Three results that shaped the final build, reported before anything else.
 
-### 1. A TF-IDF baseline beats the deployed transformer, at 23× lower latency
+**1. The classical baseline wins on accuracy.**
 
-| | test macro-F1 | p95 latency | size |
-|---|---|---|---|
-| **TF-IDF char n-gram + LogReg** | **0.9787** | **0.55 ms** | ~5 MB |
-| MiniLM L12-H384 (deployed) | 0.9695 | 12.91 ms | 471 MB |
+| Model | Params | test macro-F1 | p95 latency | Hardware |
+|---|---|---|---|---|
+| TF-IDF char n-gram + LogReg | — | **0.9787** | **0.55 ms** | local |
+| **MiniLM L12-H384 (deployed)** | 118M | 0.9695 | 12.91 ms | local |
+| XLM-R base | 278M | 0.9645 | 93.29 ms | Kaggle — not comparable |
 
-The classical baseline is more accurate *and* 23× faster. MiniLM ships
-anyway, because the point of the project is to serve a transformer properly
-— but on the merits of this dataset, the 5 MB model wins, and any honest
-reading of the table says so.
+A 5 MB model beats a 278M-parameter transformer, at 23× lower latency than the transformer that *is* deployed. It isn't shipped, because the project's goal was serving a transformer via ONNX — but the comparison is the strongest evidence in the whole write-up, and it's why MiniLM (not XLM-R) was the model chosen for optimization.
 
-### 2. The ONNX speedup target was missed
+**2. ONNX alone did not hit the 2× target — and INT8 was rejected for a reason F1 doesn't show.**
 
-The goal was to halve p95 latency versus PyTorch fp32. Measured, same
-machine, same process, batch 1:
-
-| backend | p50 | p95 | speedup |
-|---|---|---|---|
-| PyTorch fp32 (baseline) | 8.71 | 12.28 ms | — |
-| **ONNX fp32 (deployed)** | 5.09 | **9.14 ms** | **1.34×** |
-| ONNX INT8 (rejected) | 3.07 | 5.55 ms | 2.21× |
-
-**1.34×, not 2×.** INT8 would have cleared the bar at 2.21× and was rejected
-for the reason below. The target is recorded as missed rather than quietly
-restated to match what was achieved.
-
-Two related findings from the same measurements:
-
-- **Padding matters more than the runtime.** Dropping fixed-64 padding for
-  dynamic-to-batch-max saves more p95 than switching PyTorch → ONNX does.
-- **ONNX only wins at batch 1.** At batch 8 and 32 it is *slower* than
-  PyTorch. Batching also hurts overall: batch 1 is the highest-throughput
-  configuration measured, because one long message drags a whole batch up to
-  its length.
-
-### 3. INT8 was rejected — it hid a phishing regression inside a healthy F1
-
-Dynamic INT8 quantisation is 3.96× smaller and 2.21× faster. It costs 1.48
-macro-F1 points. That alone might be arguable. This is not:
-
-| | ONNX fp32 | INT8 |
+| | ONNX fp32 (deployed) | INT8 (rejected) |
 |---|---|---|
-| test macro-F1 | 0.9695 | 0.9547 |
-| phishing **recall** | 0.962 | 0.940 |
-| phishing F1 | 0.963 | 0.959 |
-| **phishing messages misread as `normal`** | **4** | **13** |
+| size | 472 MB | 119 MB |
+| p95 (batch 1, dynamic padding) | 9.14 ms | 5.55 ms |
+| speedup vs PyTorch | 1.34× | 2.21× |
+| macro-F1 | 0.9695 | 0.9547 |
+| phishing missed as normal | 4 | **13** |
 
-INT8 more than triples phishing false negatives into `normal` — the worst
-available direction for a safety classifier to fail in. And it is nearly
-invisible in the summary: phishing's **F1 barely moves**, because precision
-rises as recall falls. Anyone reading macro-F1 or the per-class F1 column
-would have shipped it.
+INT8 would have hit the 2× target. It's not shipped: quantization tripled phishing false negatives while phishing's F1 barely moved (−0.004) — precision rose as recall fell, and F1 hid the trade entirely. For a safety classifier, a scam message read as "normal" is the worst direction to regress in. **Goal 2 is explicitly not met by what ships**, and that's stated as a result, not softened.
 
-MatMul-only quantisation (sparing the embedding table) was tested too and is
-strictly worse: 407.8 MB *and* macro-F1 0.9507. The loss is in the MatMuls,
-so there is no variant that buys size without buying error.
+**3. Data quality varies by source, and the model shows it.**
 
-**fp32 ships.** Both INT8 graphs and their metrics are kept in
-`benchmarks/` so the decision stays auditable.
+The Bangla source dataset is almost certainly synthetic (near-uniform label/language balance, 1,095 phone mentions from 266 unique numbers, heavy templating). A logistic regression predicts *which dataset* a message came from with 96.2% accuracy against a 53.1% baseline — the sources are trivially separable. Consequence: MiniLM scores 0.978 macro-F1 on synthetic Bangla and 0.890 on real Mendeley English SMS. `transactional` is English-only in the data, and that's a fact about the world, not a gap — Bangla SMS forces UCS-2 encoding (70 chars vs 160), so Bangladeshi banks send alerts in English.
 
 ---
 
-## Model selection
+## How it works
 
-Single-message CPU p95. **Read the hardware column before quoting these.**
+### Serving pipeline
 
-| Model | Params | test macro-F1 | p95 | Hardware | Size |
-|---|---|---|---|---|---|
-| TF-IDF char n-gram + LogReg | — | **0.9787** | **0.55 ms** | local | ~5 MB |
-| **MiniLM L12-H384** (deployed) | 118M | 0.9695 | 12.91 ms | local | 471 MB |
-| XLM-R base | 278M | 0.9645 | 93.29 ms | **Kaggle — not comparable** | 1.1 GB |
+```
+Pasted message
+  → normalise() — URLs to domain-only, phones to <PHONE>, OTP digits to <CODE>
+    (the model was fine-tuned on this exact normalisation; skipping it is
+    silent train/serve skew, not a crash)
+  → tokenise (tokenizers, not transformers — see below)
+  → acquire a concurrency slot (bounded semaphore, sized from the load test)
+       ↓ shed 503 if no slot within 200ms
+  → run in a worker thread (ORT releases the GIL; inline would block the
+    event loop and make the timeout unable to fire)
+  → softmax → four probabilities, fixed label order
+  → JSON: label, all four probabilities, detected language, model_version,
+    inference_ms
+```
 
-The first two rows are measured on the same local machine. The XLM-R row is
-the original Kaggle measurement and has never been re-measured locally,
-because only the MiniLM checkpoint was kept and reproducing it needs a GPU.
-Kaggle ran roughly 2.8× slower than this machine, so XLM-R's local p95 is
-probably nearer 33 ms — that is an inference, not a measurement, and it is
-not quoted as one. The XLM-R-vs-MiniLM *ordering* is still safe: both were
-measured on the same box as each other.
+### Why `transformers` isn't in the runtime path
 
-MiniLM is deployed because the project exists to serve a transformer, and it
-beat XLM-R on both accuracy and latency.
+`AutoTokenizer` pulled in the full `transformers` package for one function. Measured: 385 MB of the 923 MB peak process memory was the import alone, before touching the model. Swapped for `tokenizers` directly — verified byte-identical `input_ids`/`attention_mask` across all 200 test messages, individually and batched, then re-ran the full 1,923-row evaluation to confirm macro-F1 was unchanged (0.9695, exact). Peak memory dropped to 427 MB. This is also what makes the Streamlit deploy fit under its 1 GB ceiling.
 
-Run-to-run noise is about ±0.3 macro-F1 from GPU non-determinism. Treat
-sub-0.5-point differences as noise. Quantisation, by contrast, is
-deterministic — the 1.48-point INT8 drop is not noise.
+### Load shedding
 
----
+The first load test found the service had none: at 240 rps offered, it answered every request correctly after a 42-second wait. Nothing shed. Fixed with a semaphore sized to the thread count plus a 200ms queue timeout:
 
-## Data caveats
+| offered rps | | p95 | shed |
+|---|---|---|---|
+| 90 | before / after | 21.63 / 17.64 ms | 0% |
+| 120 | before / after | 1331.44 / 213.41 ms | 3.5% |
+| 240 | before / after | **42250.80 / 257.17 ms** | 58.1% |
 
-These are load-bearing. The headline accuracy numbers overstate real-world
-performance, and the reasons are known.
-
-**The Bangla source dataset is almost certainly synthetic.** Near-perfect
-uniform language balance, 1,095 phone mentions drawn from only 266 unique
-numbers, and template families that differ only in their digits.
-
-**The sources are trivially separable.** A logistic regression predicts which
-source dataset a message came from with **0.962 accuracy** against a 0.531
-majority baseline. A model can score well by learning source style rather
-than message type, which is why per-source metrics are reported every time:
-
-| source | n | macro-F1 |
-|---|---|---|
-| bengali_smishing (synthetic) | 1013 | 0.978 |
-| mendeley (real English SMS) | 871 | **0.890** |
-
-Roughly nine points worse on the real data than the synthetic data. The
-aggregate number is flattered by the easy half.
-
-**`transactional` is English-only, and that is a fact about the world, not a
-gap in the data.** Bangla text in SMS forces UCS-2 encoding — 70 characters
-per message instead of 160 — so Bangladeshi banks and mobile-money providers
-send their alerts in English. It has been left that way deliberately. No
-synthetic data was generated to fill it.
-
-**Three templates carry contradictory labels** in the source data, an
-upstream annotation error, left in deliberately rather than quietly cleaned.
-
-**There is no real-world evaluation set.** Nothing here was tested against
-messages collected from actual phones beyond a 39-message sample. Every test
-score on this page should be read with that in mind.
-
-The four classes: `normal`, `transactional`, `promotional`, `phishing`. Spam
-was deliberately folded into `promotional`, because one source dataset had no
-spam category and labelled such messages `promo`; keeping them apart made the
-boundary inconsistent by construction. Train is 27:1 imbalanced, so
-**macro-F1 is reported everywhere and accuracy nowhere** — accuracy mostly
-measures how often the model says `normal`.
+164× better p95 at 240 rps by refusing 58% of it — and it made the service's overload behaviour *reproducible*: before shedding, the knee at 95 rps measured 45 ms in one run and 352 ms in another. After, two runs agree within 3 ms.
 
 ---
 
-## Service
+## Project structure
 
-FastAPI, ONNX Runtime, one session created at startup and reused.
+```
+bartascope/
+│
+├── app/
+│   ├── main.py            # FastAPI: 5 endpoints, lifespan-loaded ORT session
+│   ├── model.py            # Classifier wrapper, thread config from cgroup quota
+│   ├── textproc.py         # normalise() / detect_lang() — shared with the dataset builder
+│   ├── metrics.py          # hand-rolled Prometheus exposition
+│   ├── schemas.py
+│   └── static/index.html   # the FastAPI-served frontend
+│
+├── streamlit_app.py         # second frontend — free public deploy, model pulled from HF at cold start
+│
+├── scripts/
+│   ├── prepare_dataset.py       # merge, redact, dedupe, stratified+group-aware split
+│   ├── baseline_tfidf.py        # the model that wins
+│   ├── train_transformer.py     # model-agnostic — checkpoint is a CLI flag
+│   ├── export_onnx.py           # export + parity check (<1e-4 or it stops)
+│   ├── quantize_onnx.py         # INT8 — kept for the record, not for deployment
+│   ├── evaluate_onnx.py         # per-class/language/source eval, any .onnx file
+│   ├── benchmark.py              # backend x batch x padding sweep
+│   ├── benchmark_api.py          # end-to-end HTTP latency
+│   └── loadtest.py               # k6 driver, liveness-guarded
+│
+├── load/                    # k6 profiles: constant_arrival.js, idle_burst.js
+├── Dockerfile               # torch-free runtime image
+├── Dockerfile.pytorch       # baseline-reproduction image only, never a serving image
+├── docker-entrypoint.sh     # BARTASCOPE_THREADS from cgroup CPU quota
+├── benchmarks/              # every measured row — the whole latency story
+│   ├── latency.csv
+│   ├── eval_fp32.json / eval_int8.json / eval_int8_matmul.json
+│   └── export_info.json
+├── models/
+│   ├── results.json, errors.csv, confusion_matrix.csv   # MiniLM's recorded numbers
+│   ├── minilm/           # PyTorch checkpoint (gitignored — see below)
+│   └── baseline/         # TF-IDF model.joblib (gitignored — regenerate via baseline_tfidf.py)
+├── onnx_out/                # exported ONNX graph + tokenizer (gitignored — see below)
+├── tests/smoke_api.py       # 26 checks, real model, no mocks, in-process or --base-url
+└── CLAUDE.md                # the working log (gitignored)
+```
 
-| endpoint | purpose |
+Model weights (`model.onnx`, `model.onnx.data`, tokenizer files) are hosted on [Hugging Face](https://huggingface.co/SahadatIslam/bartascope-minilm), not in this repo — GitHub's free LFS bandwidth (1 GB/month) can't hold a 472 MB artifact under repeated redeploys. The PyTorch checkpoint and TF-IDF baseline are gitignored too, since both are reproducible from `scripts/train_transformer.py` and `scripts/baseline_tfidf.py` respectively.
+
+---
+
+## Data
+
+Four classes, 12,808 rows merged from two public SMS datasets plus 350 messages collected from real phones (English-only — see finding 3 above): `normal`, `transactional`, `promotional`, `phishing` (spam folded into promotional; the source schemes disagreed on the boundary). Split stratified on `(label, language)` jointly, with whole template families kept in one split — a plain random split would leak near-duplicate templated SMS across train/test and inflate every number in this README.
+
+Full label taxonomy, redaction rules, and the source-separability check are in `CLAUDE.md`.
+
+---
+
+## Local setup
+
+**1. Clone and install**
+
+```bash
+git clone https://github.com/SahadatIslamAsif/BartaScope.git
+cd BartaScope
+python -m venv .venv
+.venv\Scripts\pip install -r requirements-runtime.txt   # serving only
+```
+
+**2. Get the model**
+
+Weights live on Hugging Face:
+
+```bash
+.venv\Scripts\hf download SahadatIslam/bartascope-minilm --local-dir onnx_out
+```
+
+**3. Run the service**
+
+```bash
+.venv\Scripts\uvicorn app.main:app --port 8080
+```
+
+Open `http://127.0.0.1:8080`.
+
+**4. Or run the container**
+
+```bash
+docker build -t bartascope .
+docker run --rm -p 8099:8080 --cpus 2 bartascope
+```
+
+---
+
+## Deployment
+
+Cloud Run, Fly.io, Hugging Face Spaces and Render were each ruled out — a card requirement, a free-tier removal, or too little memory for a 470 MB model. Deployed instead on **Streamlit Community Cloud**: free, no card, ~1 GB memory. The model is pulled from the [Hugging Face repo](https://huggingface.co/SahadatIslam/bartascope-minilm) at cold start and cached for the container's lifetime.
+
+The FastAPI service, Docker image, and load test remain the actual engineering deliverable — Streamlit is the free public front door to the same model.
+
+---
+
+## Scripts
+
+| Script | What it does |
 |---|---|
-| `GET /` | the web page |
-| `POST /v1/classify` | one message |
-| `POST /v1/classify/batch` | up to 64 messages |
-| `GET /healthz` | liveness |
-| `GET /readyz` | readiness — reports a failed model load |
-| `GET /metrics` | Prometheus exposition |
-
-```bash
-curl -X POST localhost:8080/v1/classify \
-  -H 'Content-Type: application/json' \
-  -d '{"text": "Your bKash account will be closed. Verify at http://bkash-verify-bd.info"}'
-```
-
-```json
-{
-  "label": "phishing",
-  "confidence": 0.9719,
-  "probabilities": {
-    "normal": 0.0043, "transactional": 0.0167,
-    "promotional": 0.0071, "phishing": 0.9719
-  },
-  "language": "english",
-  "language_uncertain": false,
-  "chars": 98,
-  "model_version": "bartascope-minilm-v1.0.0",
-  "inference_ms": 9.385
-}
-```
-
-**Message text is never logged.** Users paste real SMS containing their own
-transaction details; only length and predicted class are recorded, and
-`/metrics` carries counts and labels only.
-
-The service applies the same `normalise()` the model was fine-tuned on —
-URLs reduced to scheme and domain, phone numbers to `<PHONE>`, OTP digits to
-`<CODE>`. Serving raw text would be a silent failure: confident probabilities
-drawn from a distribution the model never saw. That function lives in
-`app/textproc.py` and is imported by both the dataset builder and the
-service, verified byte-identical across all 12,808 rows, so the two paths
-cannot drift.
+| `scripts/prepare_dataset.py` | Rebuild `merged.csv` from raw sources |
+| `scripts/baseline_tfidf.py` | Train and evaluate the classical baseline |
+| `scripts/train_transformer.py` | Fine-tune any HF sequence-classification checkpoint (needs a GPU) |
+| `scripts/export_onnx.py` | Export to ONNX, verify parity |
+| `scripts/quantize_onnx.py` | INT8 dynamic quantization |
+| `scripts/evaluate_onnx.py` | Full eval of any `.onnx` graph |
+| `scripts/benchmark.py` | Latency sweep across backend/batch/padding |
+| `scripts/benchmark_api.py` | End-to-end HTTP latency |
+| `scripts/loadtest.py` | k6 profiles against the running container |
+| `python tests/smoke_api.py` | 26-check suite, in-process or `--base-url` against a live server |
 
 ---
 
-## Container
+## Testing
 
-| measurement | value | meaning |
-|---|---|---|
-| `docker images` | 1.33 GB disk / 511 MB content | uncompressed + attestation. Misleading, don't quote it. |
-| `docker image inspect .Size` | **511 MB** | compressed — what a node pulls |
-| `du -sm /` inside | 772 MB | disk while running |
+**`tests/smoke_api.py`** runs the real app against the real ONNX graph — no mocks, so a preprocessing or model-loading break can't hide behind a stubbed response. The same suite runs in-process for fast iteration and over HTTP (`--base-url`) against a container.
 
-Multi-stage, **torch excluded from the runtime image**. Torch is needed to
-*produce* the ONNX graph, never to run it, and including it would add ~2 GB
-for code that would never execute.
+**`benchmarks/latency.csv`** is the append-only record behind every number in this README — 80+ rows across backends, batch sizes, padding strategies, and load profiles, each tagged with a `run_id` and machine.
 
-`transformers` is excluded too, as of this measurement. It was only ever
-used to call `AutoTokenizer.from_pretrained()`; swapping in the raw
-`tokenizers` package (`Tokenizer.from_file`, verified byte-identical
-tokenisation first) dropped site-packages from 247 MB to **181 MB**. That's
-a 66 MB uncompressed win, but only 12 MB of it survives compression (523 MB
-→ 511 MB pulled) — `transformers` is mostly plain-Python source, which gzips
-hard, so most of the saving doesn't show up in pull size even though it's
-real on disk.
-
-The model is 467 MB of the 511 MB, so dependency trimming has little
-remaining headroom.
-
-**Cold start: 4.30 s median** (`docker run` → `/readyz` 200, `--cpus 2`,
-three runs: 4.04 / 4.30 / 4.48), of which ~1.8 s is loading the model. The
-web page is built around this: the button shows an animated spinner, and
-after 1.2 s a hint explains that the classifier is starting.
-
-`BARTASCOPE_THREADS` is derived from the **cgroup CPU quota**, not
-`os.cpu_count()` — inside a container that reports the host's core count and
-ignores the limit entirely. On a 32-core node with a 1-CPU limit, ONNX
-Runtime would otherwise spawn 32 spin-waiting threads to share one core.
+**k6** (`load/`) provides two profiles: a stepped constant-arrival-rate sweep to find where p95 breaks, and an idle-then-burst profile for the scale-to-zero cold-start story.
 
 ---
 
-## Capacity and load shedding
+## Known limitations
 
-k6, two profiles, against the container on 2 vCPU. **Max sustained rate with
-p95 under 50 ms: 90 rps.**
-
-The first load test found something worth fixing. At every offered rate, up
-to 240 rps, the service returned **zero errors** — it degraded purely by
-queueing. At 240 rps it still answered every request correctly, after making
-the caller wait **42 seconds**. Nothing shed. A 42-second success is worse
-than an immediate 503: the caller has long since given up, the work is
-wasted, and on Cloud Run the platform would have killed the request anyway.
-
-So the service now bounds in-flight inference and refuses rather than queues.
-Same profile, before and after:
-
-| offered rps | | p50 | p95 | p99 | worst | shed |
-|---|---|---|---|---|---|---|
-| 90 | before | 9.04 | 21.63 | 56.27 | 164 ms | — |
-| 90 | **after** | 8.85 | 17.64 | 49.88 | 93 ms | 0% |
-| 120 | before | 329.53 | **1331.44** | 1987.65 | 3137 ms | — |
-| 120 | **after** | 176.84 | **213.41** | 233.86 | 276 ms | 3.5% |
-| 240 | before | 2362.82 | **42250.80** | 43558.54 | 44085 ms | — |
-| 240 | **after** | 211.69 | **257.17** | 272.94 | 313 ms | 58.1% |
-
-At 240 rps p95 drops from 42.3 seconds to 257 ms — **164× better** — by
-refusing 58% of the traffic outright. Latency is now bounded by construction:
-a request waits at most 200 ms for a slot before it is shed, so nothing can
-grow into the multi-second regime. Sustainable load is unaffected: at 90 rps
-nothing is shed and p95 slightly improves.
-
-It also made the service *predictable*. Before shedding, the knee was bimodal
-— 95 rps measured p95 45 ms in one run and 352 ms in another, so the limit
-was a coin flip. After, two independent runs agree to within 3 ms at both
-overload rates (120 rps: 213.41 and 213.13; 240 rps: 257.17 and 260.24).
-Refusing work early removes the queue that was generating the variance.
-
-Sizing comes from the measurements, not from taste. One request occupies all
-`intra_op_num_threads`, so requests do not really run in parallel and
-`max_concurrency` defaults to the thread count — permitting one full-width
-inference plus one waiting. Little's law agrees: 90 rps at ~10 ms of service
-time is under one request in flight on average.
-
-Shed responses return `503` with `Retry-After: 1` and are counted separately
-from errors in `/metrics` (`bartascope_shed_total`), because a shed request
-is the service working correctly under overload, not a fault.
-
-Other findings from the load test:
-
-- **Throughput ceilings at ~130 rps** however much is offered. Requests
-  serialise on the intra-op threads rather than parallelising.
-- **Bursting from idle is free** at a sustainable rate: idle → 60 rps gave a
-  burst p95 of 15.09 ms, *below* the idle p95 of 19.57, with only the single
-  worst request (75.6 ms) showing the wake-up.
-- **The container segfaulted once** (exit 139, not OOM) during sustained
-  overload, and did not reproduce in two targeted attempts. Memory was flat
-  throughout, so it is neither a leak nor the OOM killer. Recorded as one
-  unexplained crash — not a known bug, and not evidence of stability either.
-
-## Latency: API vs model
-
-These are different numbers and the CSV keeps them under different names.
-
-| | p50 | p95 | p99 |
-|---|---|---|---|
-| `onnx-fp32` — `session.run` only, 6 threads | 5.09 | 9.14 | 10.36 |
-| `api-http-e2e` — full round trip, container, 2 threads | 9.09 | **16.14** | 18.66 |
-
-HTTP, ASGI, validation and JSON account for only ~2 ms at p50; the rest is
-preprocessing plus running on 2 threads instead of 6. **9.14 ms is not a
-latency any caller ever sees** — quote 16.14 ms for the API.
+- Goal 2 (halve p95 latency) is not met by what ships: ONNX fp32 gives 1.34×. INT8 would clear it but was rejected on safety grounds.
+- Test accuracy is inflated by a likely-synthetic Bangla source; a held-out set of genuinely real-world messages across all four classes and four languages hasn't been built yet.
+- `transactional` has no Bangla data by design (see finding 3), so the model has never seen a genuine Bangla bank alert.
+- The container segfaulted once under sustained overload (exit 139, not OOM) and did not reproduce in two targeted attempts — recorded as an open, unreproduced issue, not a known bug.
+- `Dockerfile.pytorch` is written but never built; the PyTorch baseline numbers in this README come from a local benchmark run, not that image.
 
 ---
 
-## Reproducing
+## Author
 
-Every latency claim in this README comes from `benchmarks/latency.csv`, which
-is append-only and records machine, thread count, batch size, padding
-strategy and warm-up for every row. No remembered numbers.
-
-```bash
-python scripts/prepare_dataset.py --outdir data/     # rebuild merged.csv
-python scripts/baseline_tfidf.py  --data data/merged.csv --outdir models/baseline
-python scripts/train_transformer.py --data data/merged.csv \
-    --model microsoft/Multilingual-MiniLM-L12-H384 \
-    --tokenizer xlm-roberta-base --epochs 6 --lr 5e-5 --outdir models/minilm
-python scripts/export_onnx.py   --model-dir models/minilm --data data/merged.csv
-python scripts/evaluate_onnx.py --model onnx_out/model.onnx
-python scripts/benchmark.py     --backends onnx-fp32     # one backend per process
-python tests/smoke_api.py
-```
-
-Training needs a GPU (~4 minutes on a Kaggle T4). Everything else runs on
-CPU. On Windows, `export_onnx.py` needs `PYTHONIOENCODING=utf-8` or torch's
-own success message crashes cp1252 stdout mid-export.
-
-**Benchmark one backend per process.** A combined run holding two ONNX
-Runtime sessions plus torch inflated PyTorch's p95 from 15.57 ms to 92.67 ms,
-because ORT thread pools spin-wait rather than sleeping when idle. That run
-produced a flattering, entirely fake "7.28× vs PyTorch".
+**Md Sahadat Islam**<br>
+Student — American International University-Bangladesh (AIUB)<br>
+Student ID: 22-49395-3<br>
+GitHub: [@SahadatIslamAsif](https://github.com/SahadatIslamAsif)
 
 ---
 
-## Layout
+## License
 
-```
-app/                 FastAPI service, ONNX wrapper, shared preprocessing, web page
-scripts/             dataset build, training, export, quantisation, eval, benchmarks
-load/                k6 profiles
-tests/smoke_api.py   end-to-end against the real model, no mocks
-benchmarks/          latency.csv and the eval JSONs — the committed record
-data/merged.csv      12,808 rows with a `split` column
-```
+MIT © 2026 Md Sahadat Islam — see [LICENSE](LICENSE) for full text.
 
-`models/` and `onnx_out/` are build artifacts and are gitignored; regenerate
-them with the commands above. Filter on the existing `split` column — never
-re-split. The split is stratified on `(label, lang)` jointly and keeps
-template families whole, because templated SMS are identical once digits are
-stripped and splitting them leaks train into test.
+---
+
+## Screenshots
+
+**Normal**
+![Normal message](screenshots/normal.png)
+
+**Transactional**
+![Transactional message](screenshots/transactional.png)
+
+**Promotional**
+![Promotional message](screenshots/promotional.png)
+
+**Phishing**
+![Phishing message](screenshots/phishing.png)

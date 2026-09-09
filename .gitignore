@@ -1,9 +1,26 @@
-models/
+# Working notes / internal log - not part of the public project surface.
+CLAUDE.md
+
+# Python
 __pycache__/
-*.zip
-onnx_out/
+*.pyc
+*.pyo
+*$py.class
+
+# Virtual environment
 .venv/
-sym_shape_infer_temp.onnx
-*.data
-load/messages.json
-load/summary_*.json
+
+# Model artifacts - too large for GitHub (472 MB ONNX, ~460 MB safetensors).
+# Weights live on Hugging Face; see README.md for the download command.
+onnx_out/
+models/minilm/
+models/baseline/
+
+# Editor / OS cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Docker build context leftovers
+*.tar
