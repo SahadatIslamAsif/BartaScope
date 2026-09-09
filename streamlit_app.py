@@ -101,12 +101,22 @@ THREADS = 1
 # quietly drift apart on the limit they enforce.
 _ = MAX_CHARS
 
-BADGE_COLORS = {
-    "phishing": {"bg": "#E4D5D2", "fg": "#7A2E1C", "bar": "#A03A22"},
-    "promotional": {"bg": "#F5EBD8", "fg": "#6E4B14", "bar": "#A67722"},
-    "normal": {"bg": "#EDEAE4", "fg": "#4A4139", "bar": "#6B4A34"},
-    "transactional": {"bg": "#EDEAE4", "fg": "#4A4139", "bar": "#6B4A34"},
+# One palette entry per label, shared by the top verdict pill and the four
+# label chips below it so the two never disagree on what a label's color
+# means. `fg` colors the bar fill and the chip's text; pill_bg is a low-
+# opacity wash of it for the chip background, so the chip reads as filled
+# rather than outlined. promotional vs. phishing were picked with a
+# deliberate hue *and* lightness gap (~44 degrees of hue, ~17 points of L*)
+# so they can't be confused at a glance -- the same check CLAUDE.md's
+# palette section applied to app/static/index.html's badges, redone here
+# for a dark background.
+CATEGORY_COLORS = {
+    "normal": {"fg": "#6EE7B7", "bar": "#6EE7B7", "pill_bg": "rgba(110,231,183,0.18)"},
+    "transactional": {"fg": "#7CB4F2", "bar": "#7CB4F2", "pill_bg": "rgba(124,180,242,0.18)"},
+    "promotional": {"fg": "#F0B429", "bar": "#F0B429", "pill_bg": "rgba(240,180,41,0.18)"},
+    "phishing": {"fg": "#F16063", "bar": "#F16063", "pill_bg": "rgba(241,96,99,0.20)"},
 }
+MUTED = "#9AA4B2"
 
 st.set_page_config(page_title="Bartascope", page_icon="🔎", layout="centered")
 
@@ -126,12 +136,30 @@ def load_classifier() -> tuple[Classifier, float]:
     return clf, download_seconds
 
 
-st.title("Bartascope")
+# "Barta Scope", with the space, is the displayed heading only -- the repo,
+# service, Docker image and model_version stay "bartascope" per CLAUDE.md's
+# naming table. Gradient text needs both background-clip and its -webkit-
+# prefixed form (Safari doesn't support the unprefixed property) plus an
+# explicit transparent fill color, or the glyphs render solid black instead
+# of showing the gradient through them.
+st.markdown(
+    """
+    <h1 style="
+        font-size:2.75rem; font-weight:800; letter-spacing:-0.01em;
+        margin:0 0 4px 0; text-decoration:none;
+        background:linear-gradient(135deg, #7DEBC9, #4FB8D9);
+        -webkit-background-clip:text; background-clip:text;
+        color:transparent; -webkit-text-fill-color:transparent;
+    ">Barta Scope</h1>
+    """,
+    unsafe_allow_html=True,
+)
 st.caption("SMS message type classifier. Advisory only.")
 st.write(
     "Paste an SMS message below to see whether it looks personal, a "
     "service notification, advertising, or a phishing attempt."
 )
+st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
 
 try:
     classifier, download_seconds = load_classifier()
@@ -144,17 +172,6 @@ except Exception as exc:  # noqa: BLE001 -- surfaced to the viewer, not raised
 if load_error:
     st.error(f"The classifier could not be loaded: {load_error}")
     st.stop()
-
-# Only meaningful the first time a given container serves a request -- every
-# later rerun (this session or another visitor's) hits load_classifier()'s
-# cache and gets the same download_seconds back, so this line always
-# describes *this container's* cold start, not necessarily *this pageview's*.
-if download_seconds:
-    st.caption(
-        f"Cold start: model pulled from Hugging Face in "
-        f"{download_seconds:.1f}s, session created in "
-        f"{classifier.load_seconds:.1f}s."
-    )
 
 if "result" not in st.session_state:
     st.session_state.result = None
@@ -181,49 +198,79 @@ if st.button("Check message", type="primary"):
 
 result = st.session_state.result
 if result:
-    colors = BADGE_COLORS[result["label"]]
+    colors = CATEGORY_COLORS[result["label"]]
+    # margin-top is the gap from the "Check message" button above; only
+    # rendered when a result exists, so there's nothing to space when there
+    # isn't one.
     st.markdown(
         f"""
-        <div style="display:flex; align-items:baseline; gap:10px; margin-top:8px;">
-          <span style="background:{colors['bg']}; color:{colors['fg']};
+        <div style="display:flex; align-items:baseline; gap:10px; margin:28px 0 0 0;">
+          <span style="background:{colors['pill_bg']}; color:{colors['fg']};
                        padding:4px 12px; border-radius:999px;
-                       font-weight:600; text-transform:capitalize;">
+                       font-weight:700; text-transform:capitalize;">
             {result['label']}
           </span>
-          <span style="color:#5D564E;">{result['confidence'] * 100:.1f}% confidence</span>
+          <span style="color:{MUTED};">{result['confidence'] * 100:.1f}% confidence</span>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # Fixed order, not sorted by value, so the bars stay in the same place
-    # between messages and can be compared at a glance.
+    # Fixed order, not sorted by value, so the rows stay in the same place
+    # between messages and can be compared at a glance. Only the label is
+    # boxed (a tinted, bordered pill); the bar itself is a plain fill on a
+    # fixed low-opacity neutral track, same as the pre-redesign version, so
+    # colour appears exactly twice per row -- the chip and the fill -- and
+    # the row has no outer container competing with it.
+    # Built as single-line HTML with no leading whitespace: joining several
+    # multi-line indented <div> blocks tripped Python-Markdown's "4-space
+    # indent after a blank-ish line = code block" rule on every row but the
+    # first, which rendered as literal text instead of a styled box.
     bar_rows = []
     for label in LABELS:
         prob = result["probabilities"][label]
-        bar_color = BADGE_COLORS[label]["bar"]
-        bar_rows.append(f"""
-        <div style="display:flex; align-items:center; gap:8px; margin:4px 0;">
-          <span style="width:100px; font-size:13px; text-transform:capitalize;">{label}</span>
-          <div style="flex:1; background:#EDEAE4; border-radius:4px; height:10px;">
-            <div style="width:{prob * 100:.1f}%; background:{bar_color};
-                        height:10px; border-radius:4px;"></div>
-          </div>
-          <span style="width:44px; font-size:13px; text-align:right;">{prob * 100:.1f}%</span>
-        </div>
-        """)
-    st.markdown("".join(bar_rows), unsafe_allow_html=True)
-
-    lang_note = " (uncertain)" if result["language_uncertain"] else ""
-    st.caption(
-        f"Language: {result['language']}{lang_note}  ·  "
-        f"{result['inference_ms']:.1f} ms  ·  {MODEL_VERSION}"
+        c = CATEGORY_COLORS[label]
+        bar_rows.append(
+            f'<div style="display:flex; align-items:center; gap:12px; '
+            f'margin:8px 0;">'
+            f'<span style="background:{c["pill_bg"]}; color:{c["fg"]}; '
+            f'font-weight:700; padding:4px 10px; border-radius:999px; '
+            f'font-size:13px; text-transform:capitalize; white-space:nowrap;">'
+            f'{label}</span>'
+            f'<div style="flex:1; background:rgba(255,255,255,0.08); '
+            f'border-radius:999px; height:8px;">'
+            f'<div style="width:{prob * 100:.1f}%; background:{c["bar"]}; '
+            f'height:8px; border-radius:999px;"></div></div>'
+            f'<span style="width:48px; font-size:13px; text-align:right;">'
+            f'{prob * 100:.1f}%</span></div>'
+        )
+    st.markdown(
+        f"<div style='margin-top:20px;'>{''.join(bar_rows)}</div>",
+        unsafe_allow_html=True,
     )
 
-st.divider()
+    lang_note = " (uncertain)" if result["language_uncertain"] else ""
+    st.markdown(
+        f"""
+        <div style="color:{MUTED}; font-size:13px; white-space:nowrap;
+                    text-align:justify; margin-top:6px;">
+          Language: {result['language']}{lang_note} &middot;
+          {result['inference_ms']:.1f} ms &middot; {MODEL_VERSION}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 st.markdown(
-    "**Advisory only.** This is a model's best guess, not a guarantee — it "
-    "can be wrong in both directions. Whatever it says, **never share an "
-    "OTP, PIN or password with anyone**, and never enter one on a page you "
-    "reached from a link in a message."
+    f"""
+    <div style="border-top:1px solid rgba(255,255,255,0.10);
+                margin-top:28px; padding-top:16px;
+                color:{MUTED}; font-size:13px; line-height:1.6;">
+      <strong>Advisory only.</strong> This is a model's best guess, not a
+      guarantee &mdash; it can be wrong in both directions. Whatever it
+      says, <strong>never share an OTP, PIN or password with anyone</strong>,
+      and never enter one on a page you reached from a link in a message.
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
